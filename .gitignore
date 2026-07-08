@@ -216,3 +216,15 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local documents
+local-docs/
+
+# prototype outputs
+out/
+__pycache__/
+*.egg-info/
+
+# IDE / local tooling
+.idea/
+.claude/
