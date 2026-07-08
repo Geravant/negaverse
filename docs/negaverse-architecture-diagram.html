@@ -1,106 +1,174 @@
 <!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>negaverse — Architecture</title>
-<style>
-  body{margin:0;background:#0f1117;color:#e8eaf0;
-    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
-    padding:26px 20px 40px;}
-  .page{max-width:1180px;margin:0 auto;}
-  h1{font-size:21px;margin:0 0 4px;letter-spacing:.2px}
-  .sub{color:#9aa3b2;font-size:13px;line-height:1.55;margin:0 0 18px;max-width:900px}
-  .frame{background:#12151f;border:1px solid #232838;border-radius:14px;padding:10px}
-  svg{width:100%;height:auto;display:block}
-  .legend{display:flex;flex-wrap:wrap;gap:16px;font-size:12.5px;color:#9aa3b2;margin:16px 2px 0}
-  .legend span{display:inline-flex;align-items:center;gap:7px}
-  .dot{width:11px;height:11px;border-radius:3px;display:inline-block}
-  .note{color:#9aa3b2;font-size:12.5px;line-height:1.65;margin:18px 2px 0;max-width:960px}
-  b{color:#cdd5e6}
-</style></head>
-<body><div class="page">
-  <h1>negaverse — negative-dataset generation pipeline</h1>
-  <p class="sub">Universal engine, PPI-anchored MVP. Six layers turn a positive interaction graph into a matched, confidence-scored negative set — scored by three independent streams and split for transductive or inductive learning. Grounded in Park&amp;Marcotte (2011), Koyama et al. (2023), Negatome 2.0 (2014).</p>
-  <div class="frame"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 980" font-family="-apple-system,Segoe UI,Roboto,sans-serif">
-<defs>
-  <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-    <path d="M 0 0 L 10 5 L 0 10 z" fill="#6b7690"/>
-  </marker>
-</defs>
-<rect x="0" y="0" fill="#0f1117"/>
-<rect x="390.0" y="34.0" width="400" height="52" rx="12" ry="12" fill="#1d2333" stroke="#3a4256" stroke-width="1.5"/>
-<text x="590.0" y="56.0" text-anchor="middle" font-size="14.5" font-weight="700" fill="#e8eaf0" font-family="-apple-system,Segoe UI,Roboto,sans-serif">Inputs</text>
-<text x="590.0" y="75.0" text-anchor="middle" font-size="11.5" fill="#aeb6c6" font-family="-apple-system,Segoe UI,Roboto,sans-serif">Positive interactions (edges)  +  typed entity features (plugins)</text>
-<rect x="390.0" y="118.0" width="400" height="58" rx="12" ry="12" fill="#1a1e2b" stroke="#394052" stroke-width="1.5"/>
-<text x="590.0" y="140.0" text-anchor="middle" font-size="14.5" font-weight="700" fill="#e8eaf0" font-family="-apple-system,Segoe UI,Roboto,sans-serif">Layer 1 · Candidate generation</text>
-<text x="590.0" y="159.0" text-anchor="middle" font-size="11.5" fill="#aeb6c6" font-family="-apple-system,Segoe UI,Roboto,sans-serif">enumerate / sample non-edges · embedding-guided pooling</text>
-<rect x="390.0" y="212.0" width="400" height="58" rx="12" ry="12" fill="#1a1e2b" stroke="#394052" stroke-width="1.5"/>
-<text x="590.0" y="234.0" text-anchor="middle" font-size="14.5" font-weight="700" fill="#e8eaf0" font-family="-apple-system,Segoe UI,Roboto,sans-serif">Layer 2 · Hard exclusion  (remove likely false-negatives)</text>
-<text x="590.0" y="253.0" text-anchor="middle" font-size="11.5" fill="#aeb6c6" font-family="-apple-system,Segoe UI,Roboto,sans-serif">known positives · homology / paralogs · shared complexes</text>
-<rect x="390.0" y="306.0" width="400" height="58" rx="12" ry="12" fill="#1a1e2b" stroke="#394052" stroke-width="1.5"/>
-<text x="590.0" y="328.0" text-anchor="middle" font-size="14.5" font-weight="700" fill="#e8eaf0" font-family="-apple-system,Segoe UI,Roboto,sans-serif">Layer 3 · Implausibility priors</text>
-<text x="590.0" y="347.0" text-anchor="middle" font-size="11.5" fill="#aeb6c6" font-family="-apple-system,Segoe UI,Roboto,sans-serif">localization · co-expression · GO · physical / topological fit</text>
-<rect x="45.0" y="418.0" width="330" height="74" rx="12" ry="12" fill="#123b37" stroke="#3fb6a8" stroke-width="1.5"/>
-<text x="210.0" y="440.0" text-anchor="middle" font-size="14.5" font-weight="700" fill="#d8fff8" font-family="-apple-system,Segoe UI,Roboto,sans-serif">Structured stream</text>
-<text x="210.0" y="459.0" text-anchor="middle" font-size="11.5" fill="#9fe6db" font-family="-apple-system,Segoe UI,Roboto,sans-serif">rules &amp; databases</text>
-<text x="210.0" y="474.5" text-anchor="middle" font-size="11.5" fill="#9fe6db" font-family="-apple-system,Segoe UI,Roboto,sans-serif">transparent · can hard-veto</text>
-<rect x="425.0" y="418.0" width="330" height="74" rx="12" ry="12" fill="#2c1a3d" stroke="#c07cf0" stroke-width="1.5"/>
-<text x="590.0" y="440.0" text-anchor="middle" font-size="14.5" font-weight="700" fill="#f3e6ff" font-family="-apple-system,Segoe UI,Roboto,sans-serif">Literature stream</text>
-<text x="590.0" y="459.0" text-anchor="middle" font-size="11.5" fill="#dcc2f2" font-family="-apple-system,Segoe UI,Roboto,sans-serif">embed → retrieve → LLM reason</text>
-<text x="590.0" y="474.5" text-anchor="middle" font-size="11.5" fill="#dcc2f2" font-family="-apple-system,Segoe UI,Roboto,sans-serif">non-interaction evidence + citations</text>
-<rect x="805.0" y="418.0" width="330" height="74" rx="12" ry="12" fill="#16233f" stroke="#5e8bff" stroke-width="1.5"/>
-<text x="970.0" y="440.0" text-anchor="middle" font-size="14.5" font-weight="700" fill="#e3ecff" font-family="-apple-system,Segoe UI,Roboto,sans-serif">Graph / geometric embedding</text>
-<text x="970.0" y="459.0" text-anchor="middle" font-size="11.5" fill="#b9ccf5" font-family="-apple-system,Segoe UI,Roboto,sans-serif">link-prediction + manifold distance</text>
-<text x="970.0" y="474.5" text-anchor="middle" font-size="11.5" fill="#b9ccf5" font-family="-apple-system,Segoe UI,Roboto,sans-serif">mines near-boundary hard negatives</text>
-<text x="590" y="410" text-anchor="middle" font-size="11.5" fill="#7c8598" font-style="italic" font-family="-apple-system,Segoe UI,Roboto,sans-serif">three independent scoring streams — each validated &amp; ablatable on its own</text>
-<rect x="860.0" y="560.0" width="300" height="62" rx="12" ry="12" fill="#33290c" stroke="#e0b64a" stroke-width="1.5"/>
-<text x="1010.0" y="583.0" text-anchor="middle" font-size="14.5" font-weight="700" fill="#ffeec2" font-family="-apple-system,Segoe UI,Roboto,sans-serif">Layer 4 · Gold negatives</text>
-<text x="1010.0" y="602.0" text-anchor="middle" font-size="11.5" fill="#e9d5a0" font-family="-apple-system,Segoe UI,Roboto,sans-serif">Negatome 2.0 anchors</text>
-<text x="1010.0" y="616.5" text-anchor="middle" font-size="11.5" fill="#e9d5a0" font-family="-apple-system,Segoe UI,Roboto,sans-serif">calibration + ground truth</text>
-<rect x="355.0" y="560.0" width="470" height="62" rx="12" ry="12" fill="#20263a" stroke="#7c9cff" stroke-width="1.5"/>
-<text x="590.0" y="582.0" text-anchor="middle" font-size="14.5" font-weight="700" fill="#eaf0ff" font-family="-apple-system,Segoe UI,Roboto,sans-serif">Layer 6 · Fusion → calibrated confidence</text>
-<text x="590.0" y="601.0" text-anchor="middle" font-size="11.5" fill="#b9c6ee" font-family="-apple-system,Segoe UI,Roboto,sans-serif">weighted · streams may abstain · structured veto overrides</text>
-<rect x="355.0" y="656.0" width="470" height="60" rx="12" ry="12" fill="#1a1e2b" stroke="#394052" stroke-width="1.5"/>
-<text x="590.0" y="678.0" text-anchor="middle" font-size="14.5" font-weight="700" fill="#e8eaf0" font-family="-apple-system,Segoe UI,Roboto,sans-serif">Layer 5 · Matching &amp; balancing</text>
-<text x="590.0" y="697.0" text-anchor="middle" font-size="11.5" fill="#aeb6c6" font-family="-apple-system,Segoe UI,Roboto,sans-serif">degree-match (defuse hubbiness) · controlled distance to positives</text>
-<rect x="410.0" y="750.0" width="360" height="58" rx="12" ry="12" fill="#1a1e2b" stroke="#8a93a6" stroke-width="1.5"/>
-<text x="590.0" y="772.0" text-anchor="middle" font-size="14.5" font-weight="700" fill="#e8eaf0" font-family="-apple-system,Segoe UI,Roboto,sans-serif">Splitting</text>
-<text x="590.0" y="791.0" text-anchor="middle" font-size="11.5" fill="#aeb6c6" font-family="-apple-system,Segoe UI,Roboto,sans-serif">transductive · inductive (homology-aware, leak-safe)</text>
-<rect x="195.0" y="850.0" width="330" height="66" rx="12" ry="12" fill="#12241a" stroke="#57c98a" stroke-width="1.5"/>
-<text x="360.0" y="872.0" text-anchor="middle" font-size="14.5" font-weight="700" fill="#dcffe9" font-family="-apple-system,Segoe UI,Roboto,sans-serif">train set</text>
-<text x="360.0" y="891.0" text-anchor="middle" font-size="11.5" fill="#a7e6c2" font-family="-apple-system,Segoe UI,Roboto,sans-serif">informative / hard</text>
-<text x="360.0" y="906.5" text-anchor="middle" font-size="11.5" fill="#a7e6c2" font-family="-apple-system,Segoe UI,Roboto,sans-serif">(bias allowed — for learning)</text>
-<rect x="655.0" y="850.0" width="330" height="66" rx="12" ry="12" fill="#12241a" stroke="#57c98a" stroke-width="1.5"/>
-<text x="820.0" y="872.0" text-anchor="middle" font-size="14.5" font-weight="700" fill="#dcffe9" font-family="-apple-system,Segoe UI,Roboto,sans-serif">eval set</text>
-<text x="820.0" y="891.0" text-anchor="middle" font-size="11.5" fill="#a7e6c2" font-family="-apple-system,Segoe UI,Roboto,sans-serif">unbiased · representative</text>
-<text x="820.0" y="906.5" text-anchor="middle" font-size="11.5" fill="#a7e6c2" font-family="-apple-system,Segoe UI,Roboto,sans-serif">(degree-matched — for benchmarking)</text>
-<path d="M 590.0 86.0 L 590.0 116.0" fill="none" stroke="#6b7690" stroke-width="1.7" marker-end="url(#ah)"/>
-<path d="M 590.0 176.0 L 590.0 210.0" fill="none" stroke="#6b7690" stroke-width="1.7" marker-end="url(#ah)"/>
-<path d="M 590.0 270.0 L 590.0 304.0" fill="none" stroke="#6b7690" stroke-width="1.7" marker-end="url(#ah)"/>
-<path d="M 590.0 364.0 L 210.0 416.0" fill="none" stroke="#6b7690" stroke-width="1.7" marker-end="url(#ah)"/>
-<path d="M 590.0 364.0 L 590.0 416.0" fill="none" stroke="#6b7690" stroke-width="1.7" marker-end="url(#ah)"/>
-<path d="M 590.0 364.0 L 970.0 416.0" fill="none" stroke="#6b7690" stroke-width="1.7" marker-end="url(#ah)"/>
-<path d="M 210.0 492.0 L 440.0 558.0" fill="none" stroke="#3fb6a8" stroke-width="1.7" marker-end="url(#ah)"/>
-<path d="M 590.0 492.0 L 590.0 558.0" fill="none" stroke="#c07cf0" stroke-width="1.7" marker-end="url(#ah)"/>
-<path d="M 970.0 492.0 L 740.0 558.0" fill="none" stroke="#5e8bff" stroke-width="1.7" marker-end="url(#ah)"/>
-<path d="M 860.0 591.0 L 827.0 591.0" fill="none" stroke="#e0b64a" stroke-width="1.7" stroke-dasharray="6 5" marker-end="url(#ah)"/>
-<text x="843.0" y="583.0" text-anchor="middle" font-size="10.5" fill="#e0b64a" font-style="italic" font-family="-apple-system,Segoe UI,Roboto,sans-serif">calibrate</text>
-<path d="M 590.0 622.0 L 590.0 654.0" fill="none" stroke="#6b7690" stroke-width="1.7" marker-end="url(#ah)"/>
-<path d="M 590.0 716.0 L 590.0 748.0" fill="none" stroke="#6b7690" stroke-width="1.7" marker-end="url(#ah)"/>
-<path d="M 590.0 808.0 L 360.0 848.0" fill="none" stroke="#6b7690" stroke-width="1.7" marker-end="url(#ah)"/>
-<path d="M 590.0 808.0 L 820.0 848.0" fill="none" stroke="#6b7690" stroke-width="1.7" marker-end="url(#ah)"/>
-<path d="M 1135.0 438.0 C 1140 320, 1150 150, 790.0 148.0" fill="none" stroke="#5e8bff" stroke-width="1.7" stroke-dasharray="6 5" marker-end="url(#ah)"/>
-<text x="1090.0" y="250.0" text-anchor="middle" font-size="10.5" fill="#7ea0ee" font-style="italic" font-family="-apple-system,Segoe UI,Roboto,sans-serif">guides sampling</text>
-<path d="M 355.0 590.0 C 40 560, 30 470, 45.0 458.0" fill="none" stroke="#8a93a6" stroke-width="1.7" stroke-dasharray="6 5" marker-end="url(#ah)"/>
-<text x="95.0" y="520.0" text-anchor="middle" font-size="10.5" fill="#9aa3b2" font-style="italic" font-family="-apple-system,Segoe UI,Roboto,sans-serif">self-training loop</text>
-<text x="60" y="536" text-anchor="middle" font-size="9.5" fill="#7c8598" font-family="-apple-system,Segoe UI,Roboto,sans-serif">re-score · promote</text>
-<text x="60" y="548" text-anchor="middle" font-size="9.5" fill="#7c8598" font-family="-apple-system,Segoe UI,Roboto,sans-serif">flag false-neg</text>
-</svg></div>
-  <div class="legend">
-    <span><i class="dot" style="background:#3fb6a8"></i>Structured stream (rules / DBs)</span>
-    <span><i class="dot" style="background:#c07cf0"></i>Literature stream (LLM reasoning)</span>
-    <span><i class="dot" style="background:#5e8bff"></i>Embedding / graph stream</span>
-    <span><i class="dot" style="background:#e0b64a"></i>Gold negatives (Negatome)</span>
-    <span><i class="dot" style="background:#57c98a"></i>Dual output (train / eval)</span>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>negaverse — Architecture</title>
+  <style>
+    body {
+      margin: 0;
+      background: #0f1117;
+      color: #e8eaf0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      padding: 28px 20px 40px;
+    }
+    .page {
+      max-width: 1180px;
+      margin: 0 auto;
+    }
+    h1 {
+      font-size: 24px;
+      margin: 0 0 8px;
+      letter-spacing: .2px;
+    }
+    .sub {
+      color: #a8b1c3;
+      font-size: 14px;
+      line-height: 1.6;
+      margin: 0 0 22px;
+      max-width: 920px;
+    }
+    .frame {
+      background: #12151f;
+      border: 1px solid #242a3a;
+      border-radius: 18px;
+      padding: 18px;
+      box-shadow: 0 18px 45px rgba(0,0,0,.25);
+    }
+    svg {
+      width: 100%;
+      height: auto;
+      display: block;
+    }
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px;
+      font-size: 13px;
+      color: #a8b1c3;
+      margin: 18px 2px 0;
+    }
+    .legend span {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+    }
+    .dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 4px;
+      display: inline-block;
+    }
+    .note {
+      color: #a8b1c3;
+      font-size: 13px;
+      line-height: 1.7;
+      margin: 20px 2px 0;
+      max-width: 980px;
+    }
+    b {
+      color: #d7deee;
+    }
+  </style>
+</head>
+<body>
+<div class="page">
+  <h1>negaverse — negative dataset generation pipeline</h1>
+  <p class="sub">
+    negaverse takes a dataset of known positive interactions and generates better negative examples for machine learning.
+    Instead of using random pairs, it creates candidates, removes known positives, scores the remaining pairs, and exports
+    separate training and evaluation datasets with confidence scores and provenance.
+  </p>
+  <div class="frame">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 940" font-family="-apple-system, Segoe UI, Roboto, sans-serif">
+      <defs>
+        <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#6f7890"/>
+        </marker>
+        <style>
+          .box-title { font-size: 16px; font-weight: 700; fill: #eef2fb; }
+          .box-text { font-size: 12.5px; fill: #b5bed0; }
+          .small-text { font-size: 11.5px; fill: #99a4b8; }
+          .section-label { font-size: 12px; font-style: italic; fill: #8791a6; }
+          .arrow { fill: none; stroke: #6f7890; stroke-width: 1.8; marker-end: url(#arrow); }
+          .soft-arrow { fill: none; stroke: #6f7890; stroke-width: 1.6; stroke-dasharray: 6 6; marker-end: url(#arrow); opacity: .75; }
+        </style>
+      </defs>
+      <rect x="0" y="0" width="1180" height="940" fill="#0f1117"/>
+      <!-- Main pipeline -->
+      <rect x="330" y="35" width="520" height="74" rx="15" fill="#1d2434" stroke="#3a4256" stroke-width="1.5"/>
+      <text x="590" y="65" text-anchor="middle" class="box-title">Input dataset</text>
+      <text x="590" y="87" text-anchor="middle" class="box-text">Known positive interactions + optional entity metadata</text>
+      <path d="M590 109 L590 142" class="arrow"/>
+      <rect x="330" y="145" width="520" height="82" rx="15" fill="#1a1f2d" stroke="#394052" stroke-width="1.5"/>
+      <text x="590" y="176" text-anchor="middle" class="box-title">1. Generate candidate pairs</text>
+      <text x="590" y="199" text-anchor="middle" class="box-text">Create a broad pool of possible pairs</text>
+      <text x="590" y="217" text-anchor="middle" class="small-text">At this stage, they are only candidates — not final negatives</text>
+      <path d="M590 227 L590 260" class="arrow"/>
+      <rect x="330" y="263" width="520" height="82" rx="15" fill="#1a1f2d" stroke="#394052" stroke-width="1.5"/>
+      <text x="590" y="294" text-anchor="middle" class="box-title">2. Remove known positives</text>
+      <text x="590" y="317" text-anchor="middle" class="box-text">Drop any pair already listed as a real interaction</text>
+      <text x="590" y="335" text-anchor="middle" class="small-text">This prevents confirmed positives from entering the negative set</text>
+      <path d="M590 345 L590 382" class="arrow"/>
+      <!-- Scoring section -->
+      <text x="590" y="385" text-anchor="middle" class="section-label">
+        remaining candidates are scored from three simple views
+      </text>
+      <rect x="70" y="420" width="310" height="100" rx="15" fill="#123b37" stroke="#3fb6a8" stroke-width="1.5"/>
+      <text x="225" y="452" text-anchor="middle" font-size="16" font-weight="700" fill="#d8fff8">Rules check</text>
+      <text x="225" y="477" text-anchor="middle" font-size="12.5" fill="#a7eee4">Apply simple safety rules</text>
+      <text x="225" y="496" text-anchor="middle" font-size="12.5" fill="#a7eee4">and flag risky candidates</text>
+      <rect x="435" y="420" width="310" height="100" rx="15" fill="#16233f" stroke="#5e8bff" stroke-width="1.5"/>
+      <text x="590" y="452" text-anchor="middle" font-size="16" font-weight="700" fill="#e3ecff">Graph check</text>
+      <text x="590" y="477" text-anchor="middle" font-size="12.5" fill="#b9ccf5">Check whether a pair looks</text>
+      <text x="590" y="496" text-anchor="middle" font-size="12.5" fill="#b9ccf5">too similar to known positives</text>
+      <rect x="800" y="420" width="310" height="100" rx="15" fill="#2c1a3d" stroke="#c07cf0" stroke-width="1.5"/>
+      <text x="955" y="452" text-anchor="middle" font-size="16" font-weight="700" fill="#f3e6ff">Literature check</text>
+      <text x="955" y="477" text-anchor="middle" font-size="12.5" fill="#dcc2f2">Optionally use an LLM to review</text>
+      <text x="955" y="496" text-anchor="middle" font-size="12.5" fill="#dcc2f2">the most uncertain candidates</text>
+      <path d="M590 345 L225 418" class="arrow"/>
+      <path d="M590 345 L590 418" class="arrow"/>
+      <path d="M590 345 L955 418" class="arrow"/>
+      <!-- Fusion -->
+      <path d="M225 520 L445 580" class="arrow"/>
+      <path d="M590 520 L590 575" class="arrow"/>
+      <path d="M955 520 L735 580" class="arrow"/>
+      <rect x="350" y="580" width="480" height="86" rx="15" fill="#20263a" stroke="#7c9cff" stroke-width="1.5"/>
+      <text x="590" y="612" text-anchor="middle" class="box-title">3. Combine scores</text>
+      <text x="590" y="635" text-anchor="middle" class="box-text">Create one confidence score for each candidate</text>
+      <text x="590" y="653" text-anchor="middle" class="small-text">Keep sub-scores, flags, and provenance for transparency</text>
+      <!-- Optional benchmark -->
+      <rect x="875" y="600" width="245" height="66" rx="15" fill="#33290c" stroke="#e0b64a" stroke-width="1.5"/>
+      <text x="997" y="626" text-anchor="middle" font-size="14.5" font-weight="700" fill="#ffeec2">Reference negatives</text>
+      <text x="997" y="648" text-anchor="middle" font-size="12" fill="#e9d5a0">Used for evaluation when applicable</text>
+      <path d="M875 633 L832 633" class="soft-arrow"/>
+      <path d="M590 666 L590 704" class="arrow"/>
+      <rect x="350" y="707" width="480" height="78" rx="15" fill="#1a1f2d" stroke="#394052" stroke-width="1.5"/>
+      <text x="590" y="738" text-anchor="middle" class="box-title">4. Build final datasets</text>
+      <text x="590" y="761" text-anchor="middle" class="box-text">Select negatives by confidence, hardness, and matching rules</text>
+      <path d="M590 785 L390 828" class="arrow"/>
+      <path d="M590 785 L790 828" class="arrow"/>
+      <!-- Outputs -->
+      <rect x="170" y="830" width="360" height="78" rx="15" fill="#12241a" stroke="#57c98a" stroke-width="1.5"/>
+      <text x="350" y="860" text-anchor="middle" font-size="16" font-weight="700" fill="#dcffe9">Training negatives</text>
+      <text x="350" y="883" text-anchor="middle" font-size="12.5" fill="#a7e6c2">Harder examples for model learning</text>
+      <rect x="650" y="830" width="360" height="78" rx="15" fill="#12241a" stroke="#57c98a" stroke-width="1.5"/>
+      <text x="830" y="860" text-anchor="middle" font-size="16" font-weight="700" fill="#dcffe9">Evaluation negatives</text>
+      <text x="830" y="883" text-anchor="middle" font-size="12.5" fill="#a7e6c2">Better-matched examples for benchmarking</text>
+    </svg>
   </div>
-  <p class="note">Two dashed feedbacks encode the paper insights: the embedding stream <b>guides candidate sampling</b> (Layer&nbsp;1) toward where hard negatives live, and the fused confidence drives a <b>self-training loop</b> (Koyama) that re-scores the pool, promotes near-boundary negatives, and flags high-scoring "negatives" as suspected false negatives. Splitting into a biased/hard <b>train</b> set and an unbiased/representative <b>eval</b> set is Park&amp;Marcotte's non-negotiable — produced together, never merged. Every pair keeps per-stream sub-scores and a provenance trail, so datasets can be re-scored as biology is revised.</p>
-</div></body></html>
+  <div class="legend">
+    <span><i class="dot" style="background:#3fb6a8"></i>Rules check</span>
+    <span><i class="dot" style="background:#5e8bff"></i>Graph check</span>
+    <span><i class="dot" style="background:#c07cf0"></i>Optional literature check</span>
+    <span><i class="dot" style="background:#e0b64a"></i>Reference negatives</span>
+    <span><i class="dot" style="background:#57c98a"></i>Final outputs</span>
+  </div>
+  <p class="note">
+    The main idea is simple: <b>start broad, filter carefully, score transparently, and export two datasets for different purposes</b>.
+    The training set contains harder examples for learning. The evaluation set is better matched to the positives, so it is more useful for fair benchmarking.
+    Every generated pair keeps its score details and provenance, so users can understand why it was included.
+  </p>
+</div>
+</body>
+</html>
