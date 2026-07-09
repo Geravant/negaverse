@@ -1,0 +1,53 @@
+"""Run the downstream-model benchmark on HuRI.
+
+    python -m negaverse.bench                 # random vs negaverse negatives
+    python -m negaverse.bench --max-positives 8000 --seed 0
+"""
+from __future__ import annotations
+
+import argparse
+
+from . import run_benchmark
+from ..io import load_huri_graph, load_negatome_in_ensembl_space
+
+
+def main(argv=None) -> None:
+    ap = argparse.ArgumentParser(prog="negaverse.bench")
+    ap.add_argument("--max-positives", type=int, default=10_000,
+                    help="subsample positives for a faster run (None-like 0 = all)")
+    ap.add_argument("--max-pool", type=int, default=40_000)
+    ap.add_argument("--test-frac", type=float, default=0.2)
+    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--features", choices=["topological", "spectral"], default="topological",
+                    help="spectral (SVD+Hadamard) is independent of the selection signal")
+    ap.add_argument("--gold-test-neg", action="store_true",
+                    help="use Negatome gold non-interactions (mapped into HuRI space) "
+                         "as the test negatives instead of easy random pairs")
+    args = ap.parse_args(argv)
+
+    print("Loading HuRI ...")
+    graph = load_huri_graph()
+    print("  graph:", graph.summary())
+
+    gold = None
+    if args.gold_test_neg:
+        try:
+            gold = load_negatome_in_ensembl_space(set(graph.g.nodes()))
+            print(f"  gold test negatives (Negatome in HuRI space): {len(gold)} pairs")
+        except FileNotFoundError as e:
+            print(f"  gold test negatives unavailable ({e}); "
+                  f"run scripts/build_uniprot_ensembl_map.py first. Falling back to random.")
+
+    neg_desc = "Negatome gold" if gold else "unbiased random"
+    print(f"Benchmarking (train on positives + random vs negaverse negatives; "
+          f"test on held-out positives + {neg_desc} negatives) ...")
+    result = run_benchmark(
+        graph, seed=args.seed, test_frac=args.test_frac,
+        max_positives=args.max_positives or None, max_pool=args.max_pool,
+        feature_set=args.features, gold_test_neg=gold)
+    print("\n=== benchmark ===")
+    print(result.summary())
+
+
+if __name__ == "__main__":
+    main()

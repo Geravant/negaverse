@@ -26,6 +26,7 @@ class StreamScore:
     value: Optional[float]
     veto: bool = False
     evidence: dict[str, Any] = field(default_factory=dict)
+    flags: list[str] = field(default_factory=list)
 
     @property
     def abstains(self) -> bool:
@@ -39,7 +40,7 @@ class NegativeRecord:
     mode: Mode
     confidence: float                     # calibrated [0,1] that the pair is a true non-interaction
     hardness: float                       # distance-to-positive-manifold percentile [0,1]
-    streams: dict[str, Optional[float]]   # per-stream sub-scores: structured / literature / embedding
+    streams: dict[str, Optional[float]]   # per-stream sub-scores: structured / literature / topology
     provenance: dict[str, Any]            # filters fired, evidence, source graph, versions
     flags: list[str] = field(default_factory=list)
 

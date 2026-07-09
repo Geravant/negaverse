@@ -6,7 +6,7 @@ Two products from the same pool, never merged (Park & Marcotte 2011):
     can't be gamed by hubbiness. Sampled so a host's frequency among negatives
     tracks its positive degree.
   * train — *informative*: deliberately hard. Sampled toward near-boundary pairs
-    (high embedding topo / low confidence) — the negatives that sit near the
+    (high topology risk / low confidence) — the negatives that sit near the
     decision boundary (Koyama 2023).
 """
 from __future__ import annotations

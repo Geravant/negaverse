@@ -58,7 +58,25 @@ local-docs/xlsxUploads_.../sars-cov2-spreadsheets/Network_Table.xlsx
 
 Expected columns: `Bait`, `PreyUniprotAcc`, `PreyGeneName`, `is_HumanPPI`.
 
-**Custom paths.** Both loaders accept a `path=` argument, so you can store the files anywhere:
+**3. Human PPI positives — HuRI** (for the downstream benchmark, `python -m negaverse.bench`):
+
+```bash
+mkdir -p local-docs/huri
+curl -kL -o local-docs/huri/HuRI.tsv http://www.interactome-atlas.org/data/HuRI.tsv
+```
+
+A homogeneous human protein–protein interaction map (~52k edges, Ensembl-keyed). Used to test whether negaverse's hard negatives train a better link-prediction model than random negatives (AUROC/AUPRC).
+
+**4. Gold test negatives — Negatome in HuRI space** (optional, for the *fair* benchmark). HuRI is Ensembl-keyed and Negatome UniProt-keyed, so map Negatome into HuRI's node space once (pulls Ensembl gene IDs from UniProt; writes a gitignored cache):
+
+```bash
+PYTHONPATH=. python scripts/build_uniprot_ensembl_map.py   # -> local-docs/mappings/uniprot_to_ensembl.tsv
+python -m negaverse.bench --gold-test-neg --features spectral
+```
+
+Without this, the benchmark tests against *easy* random negatives, which understates the value of hard negatives (see [`docs/BENCHMARK-FINDINGS.md`](docs/BENCHMARK-FINDINGS.md)). With `--gold-test-neg`, the test negatives are biologically-validated non-interactions — the meaningful comparison.
+
+**Custom paths.** Loaders accept a `path=` argument, so you can store the files anywhere:
 
 ```python
 from negaverse.io import load_sars_cov2_graph, load_negatome_pairs
@@ -106,7 +124,10 @@ The literature scorer runs by default and also writes `out/literature_cards.json
 | Method | What it does | Status |
 |---|---|---|
 | Structured scoring | Removes known positives and applies simple safety rules. | Working (simple) |
-| Graph scoring | Checks whether a candidate pair looks similar to known positive interactions in the graph. | Working (simple) |
+| Topology scoring | Link-prediction risk from graph structure (L3 length-3 paths + resource-allocation + configuration-model baseline). Positive-like pairs are riskier negatives; no-overlap pairs are easy negatives. | Working |
+| Rule-based biology (`rules/*.yaml`) | Declarative biology rules become filters with no code — e.g. co-localization (`disjoint(a.compartments, b.compartments)` → safer negative). Each rule feeds both the deterministic check and the LLM's grounding. Independent of topology. Abstains until its annotation fields are supplied. | Working (engine + co-localization live) |
+
+Add a rule by hand with [`rules/AUTHORING.md`](rules/AUTHORING.md) (validate via `python scripts/validate_rules.py`), or from a paper with the `rule-from-literature` Claude skill (`.claude/skills/rule-from-literature/`).
 | Literature scoring | Uses an LLM to review the most uncertain pairs and return a structured risk judgment. | Working, on by default (skipped without a key) |
 
 
@@ -173,6 +194,17 @@ python -m negaverse.cli --no-literature
 ```
 
 Outputs are saved in `out/`.
+
+### Demo visualizations
+
+```bash
+pip install -e ".[viz]"                 # adds matplotlib
+python -m negaverse.viz --dataset sars  # or --dataset huri
+```
+
+Writes `out/separability.png` (hard negatives sit closer to the positives than
+random ones, on common-neighbour and graph-distance axes) and `out/funnel.png`
+(the hourglass: pairs kept per stage).
 
 ### Using it from Python
 

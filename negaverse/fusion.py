@@ -13,7 +13,7 @@ from dataclasses import dataclass
 
 from .schema import StreamScore
 
-DEFAULT_WEIGHTS = {"structured": 1.0, "embedding": 1.0, "literature": 1.0}
+DEFAULT_WEIGHTS = {"structured": 1.0, "topology": 1.0, "literature": 1.0}
 
 
 @dataclass

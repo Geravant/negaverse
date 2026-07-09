@@ -1,0 +1,27 @@
+# Structural / biological rules for protein–protein interactions.
+# One entry per rule. Deterministic filters evaluate `when`; the literature/LLM
+# filter receives `rationale` as grounding context. Add a rule = add an entry.
+# See rules/README.md for the field contract.
+
+- id: colocalization_mismatch
+  modality: ppi
+  applies_to: [protein, protein]
+  when: "disjoint(a.compartments, b.compartments)"
+  effect: safer_negative            # safer_negative | riskier_negative | veto
+  weight: 0.8
+  flag: different_compartment
+  rationale: >
+    Two proteins that never share a subcellular compartment cannot physically
+    interact, so a non-edge between them is a safe negative.
+  source: "GO cellular_component"
+
+- id: hydrophobicity_interface
+  modality: ppi
+  applies_to: [protein, protein]
+  when: "a.surface_hydrophobicity < 0.2 and b.surface_hydrophobicity < 0.2"
+  effect: safer_negative
+  weight: 0.4
+  rationale: >
+    Pairs with no complementary hydrophobic surface are less likely to form a
+    stable binding interface.
+  source: "TODO — source/threshold to confirm"

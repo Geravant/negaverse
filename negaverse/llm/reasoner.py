@@ -7,7 +7,9 @@ step; it degrades gracefully (no key -> the pipeline just skips it).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
+import concurrent.futures as cf
+from collections import Counter
+from dataclasses import dataclass, field, asdict
 from typing import Any, Optional
 
 from .base import LLMError
@@ -49,6 +51,10 @@ class LiteratureCard:
     rationale: str
     evidence: list[str]
     model: str
+    # populated when the verdict is a majority vote of several LLM calls
+    n_votes: int = 1
+    agreement: float = 1.0                       # winning-verdict fraction
+    vote_counts: dict[str, int] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -84,6 +90,47 @@ class LiteratureReasoner:
             rationale=str(obj.get("rationale", "")),
             evidence=list(obj.get("evidence", []) or []),
             model=resp.model,
+        )
+
+    def reason_vote(self, u: str, v: str, context: Optional[dict] = None,
+                    votes: int = 5, max_workers: int = 5) -> LiteratureCard:
+        """Best-of-N majority vote: run `votes` independent judgements in
+        parallel and aggregate. Cuts the run-to-run variance of a single call.
+        Ties on the top verdict resolve to `uncertain` (don't force a call)."""
+        if votes <= 1:
+            return self.reason(u, v, context)
+
+        cards: list[LiteratureCard] = []
+        with cf.ThreadPoolExecutor(max_workers=min(max_workers, votes)) as ex:
+            futures = [ex.submit(self.reason, u, v, context) for _ in range(votes)]
+            for fut in cf.as_completed(futures):
+                try:
+                    cards.append(fut.result())
+                except LLMError:
+                    continue
+        if not cards:
+            raise LLMError(f"all {votes} literature votes failed for {u}-{v}")
+
+        counts = Counter(c.verdict for c in cards)
+        ranked = counts.most_common()
+        if len(ranked) > 1 and ranked[0][1] == ranked[1][1]:
+            winner = "uncertain"                 # tie on the top verdict -> abstain
+        else:
+            winner = ranked[0][0]
+
+        winners = [c for c in cards if c.verdict == winner]
+        if winners:
+            conf = sum(c.confidence for c in winners) / len(winners)
+            rep = max(winners, key=lambda c: c.confidence)
+        else:                                    # forced-uncertain with no such vote
+            conf = 0.5
+            rep = max(cards, key=lambda c: c.confidence)
+        return LiteratureCard(
+            u=u, v=v, verdict=winner, confidence=round(conf, 4),
+            rationale=rep.rationale, evidence=rep.evidence, model=rep.model,
+            n_votes=len(cards),
+            agreement=round(counts.get(winner, 0) / len(cards), 3),
+            vote_counts=dict(counts),
         )
 
     def reason_batch(

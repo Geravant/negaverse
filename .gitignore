@@ -227,4 +227,6 @@ __pycache__/
 
 # IDE / local tooling
 .idea/
-.claude/
+# ignore local Claude state, but keep the shared project skills under version control
+.claude/*
+!.claude/skills/
