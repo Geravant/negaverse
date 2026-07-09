@@ -124,7 +124,8 @@ The literature scorer runs by default and also writes `out/literature_cards.json
 | Method | What it does | Status |
 |---|---|---|
 | Structured scoring | Removes known positives and applies simple safety rules. | Working (simple) |
-| Graph scoring | Checks whether a candidate pair looks similar to known positive interactions in the graph. | Working (simple) |
+| Topology scoring | Link-prediction risk from graph structure (L3 length-3 paths + resource-allocation + configuration-model baseline). Positive-like pairs are riskier negatives; no-overlap pairs are easy negatives. | Working |
+| Co-localization | Different subcellular-compartment pairs can't interact → safer negatives; shared-compartment pairs are riskier. An **independent**, non-topology signal. Abstains until GO cellular-component annotations are supplied. | Working (needs annotations) |
 | Literature scoring | Uses an LLM to review the most uncertain pairs and return a structured risk judgment. | Working, on by default (skipped without a key) |
 
 

@@ -7,11 +7,12 @@ from .base import Filter, Stream, Stage
 from .registry import register, registered, build_filters
 from .structured import KnownPositiveVeto, StructuredStream
 from .topology import TopologyFilter
+from .colocalization import ColocalizationFilter
 from .literature import LiteratureFilter, LiteratureStream
 
 __all__ = [
     "Filter", "Stream", "Stage",
     "register", "registered", "build_filters",
     "KnownPositiveVeto", "StructuredStream", "TopologyFilter",
-    "LiteratureFilter", "LiteratureStream",
+    "ColocalizationFilter", "LiteratureFilter", "LiteratureStream",
 ]

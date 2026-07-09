@@ -61,7 +61,7 @@ def test_output_contract():
     row = r.as_row()
     for key in ("u", "v", "mode", "confidence", "hardness", "provenance"):
         assert key in row
-    assert set(r.streams) == {"structured", "literature", "topology"}
+    assert set(r.streams) == {"structured", "literature", "topology", "colocalization"}
     assert 0.0 <= r.confidence <= 1.0 and 0.0 <= r.hardness <= 1.0
 
 
