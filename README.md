@@ -58,7 +58,16 @@ local-docs/xlsxUploads_.../sars-cov2-spreadsheets/Network_Table.xlsx
 
 Expected columns: `Bait`, `PreyUniprotAcc`, `PreyGeneName`, `is_HumanPPI`.
 
-**Custom paths.** Both loaders accept a `path=` argument, so you can store the files anywhere:
+**3. Human PPI positives — HuRI** (for the downstream benchmark, `python -m negaverse.bench`):
+
+```bash
+mkdir -p local-docs/huri
+curl -kL -o local-docs/huri/HuRI.tsv http://www.interactome-atlas.org/data/HuRI.tsv
+```
+
+A homogeneous human protein–protein interaction map (~52k edges, Ensembl-keyed). Used to test whether negaverse's hard negatives train a better link-prediction model than random negatives (AUROC/AUPRC).
+
+**Custom paths.** Loaders accept a `path=` argument, so you can store the files anywhere:
 
 ```python
 from negaverse.io import load_sars_cov2_graph, load_negatome_pairs

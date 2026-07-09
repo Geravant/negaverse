@@ -14,10 +14,12 @@ dependencies = [
 [project.optional-dependencies]
 # literature-reasoning stream (§5.2): pick one or both backends
 llm = ["anthropic>=0.40", "httpx>=0.27"]
+# downstream-model benchmark
+bench = ["scikit-learn>=1.3"]
 
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["negaverse", "negaverse.streams", "negaverse.io", "negaverse.llm"]
+packages = ["negaverse", "negaverse.streams", "negaverse.io", "negaverse.llm", "negaverse.bench"]
