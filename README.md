@@ -192,6 +192,17 @@ python -m negaverse.cli --no-literature
 
 Outputs are saved in `out/`.
 
+### Demo visualizations
+
+```bash
+pip install -e ".[viz]"                 # adds matplotlib
+python -m negaverse.viz --dataset sars  # or --dataset huri
+```
+
+Writes `out/separability.png` (hard negatives sit closer to the positives than
+random ones, on common-neighbour and graph-distance axes) and `out/funnel.png`
+(the hourglass: pairs kept per stage).
+
 ### Using it from Python
 
 ```python

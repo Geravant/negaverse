@@ -16,10 +16,12 @@ dependencies = [
 llm = ["anthropic>=0.40", "httpx>=0.27"]
 # downstream-model benchmark
 bench = ["scikit-learn>=1.3"]
+# demo visualizations
+viz = ["matplotlib>=3.7"]
 
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["negaverse", "negaverse.streams", "negaverse.io", "negaverse.llm", "negaverse.bench"]
+packages = ["negaverse", "negaverse.streams", "negaverse.io", "negaverse.llm", "negaverse.bench", "negaverse.viz"]
