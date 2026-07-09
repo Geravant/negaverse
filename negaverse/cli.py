@@ -21,9 +21,9 @@ from pathlib import Path
 import pandas as pd
 
 from . import eval as ev
-from .graph import TypedInteractionGraph
 from .io import load_sars_cov2_graph, load_negatome_pairs
-from .pipeline import PipelineConfig, PipelineResult, run_pipeline
+from .pipeline import PipelineConfig, run_pipeline
+from .streams import build_filters, LiteratureFilter
 
 
 def _load_dotenv(path: str | Path = ".env") -> None:
@@ -42,76 +42,26 @@ def _load_dotenv(path: str | Path = ".env") -> None:
             os.environ[key] = val
 
 
-_PROVIDER_ENV = {"anthropic": "ANTHROPIC_API_KEY", "openrouter": "OPENROUTER_API_KEY"}
-
-
-def _resolve_provider(requested: str) -> str | None:
-    """Pick a backend whose key is present. 'auto' prefers Anthropic, then
-    OpenRouter; an explicit provider is honoured only if its key exists.
-    Returns None when no usable key is available (→ literature is skipped)."""
-    if requested == "auto":
-        for provider, env in _PROVIDER_ENV.items():
-            if os.getenv(env):
-                return provider
-        return None
-    return requested if os.getenv(_PROVIDER_ENV[requested]) else None
-
-
-def _run_literature(graph: TypedInteractionGraph, result: PipelineResult,
-                    provider: str, model: str | None, k: int, out) -> dict:
-    """Gated LLM pass: judge the top-k most contested emitted negatives.
-    Returns a summary; writes full cards to out/literature_cards.json.
-    Never fatal — a missing key or API error degrades to a skip note."""
-    resolved = _resolve_provider(provider)
-    if resolved is None:
-        want = "a provider key" if provider == "auto" else f"{_PROVIDER_ENV[provider]}"
-        print(f"\nLiterature stream skipped: no API key found (set {want} in .env).")
-        return {"status": "skipped", "reason": "no_api_key"}
-    provider = resolved
-
-    from .llm import LLMConfig, LLMController, LiteratureReasoner, LLMError
-
-    # contest = flagged suspected FN or near-boundary, ranked by low confidence
-    contested = sorted(
-        [r for r in result.records
-         if "suspected_false_negative" in r.flags or "near_boundary" in r.flags],
-        key=lambda r: r.confidence,
-    )[:k]
-    if not contested:
-        return {"status": "no_contested_pairs"}
-
-    try:
-        controller = LLMController(LLMConfig(provider=provider, model=model))
-        reasoner = LiteratureReasoner(controller)
-        print(f"\nRunning literature stream on {len(contested)} contested pairs via {controller.describe} ...")
-        pairs = []
-        for r in contested:
-            ctx = {
-                "u_type": graph.node_type.get(r.u),
-                "v_type": graph.node_type.get(r.v),
-                "u_degree": graph.degree(r.u),
-                "v_degree": graph.degree(r.v),
-                "embedding_link_score": r.streams.get("embedding"),
-                "hardness_percentile": r.hardness,
-            }
-            pairs.append((r.u, r.v, ctx))
-        cards = reasoner.reason_batch(pairs)
-    except LLMError as e:
-        print(f"  literature stream skipped: {e}")
-        return {"status": "skipped", "reason": str(e)}
-
-    payload = [c.as_dict() for c in cards]
+def _collect_literature(records, out) -> dict:
+    """Pull the gated LLM verdicts out of record provenance (the literature
+    filter ran inside the pipeline), write the cards, and summarize."""
+    cards, seen = [], set()
+    for r in records:
+        g = (r.provenance or {}).get("gated", {}).get("literature")
+        if not g or (r.u, r.v) in seen:
+            continue
+        seen.add((r.u, r.v))
+        cards.append({"u": r.u, "v": r.v, "verdict": g["verdict"],
+                      "confidence": g["verdict_confidence"], "rationale": g["rationale"],
+                      "evidence": g["evidence"], "model": g["model"]})
+    if not cards:
+        return {"status": "skipped", "reason": "no cards (no key or no contested pairs)"}
     with open(out / "literature_cards.json", "w") as fh:
-        json.dump(payload, fh, indent=2)
+        json.dump(cards, fh, indent=2)
     from collections import Counter
-    verdicts = Counter(c.verdict for c in cards)
-    return {
-        "status": "ran",
-        "model": controller.describe,
-        "cards": len(cards),
-        "verdicts": dict(verdicts),
-        "file": str(out / "literature_cards.json"),
-    }
+    verdicts = Counter(c["verdict"] for c in cards)
+    return {"status": "ran", "model": cards[0]["model"], "cards": len(cards),
+            "verdicts": dict(verdicts), "file": str(out / "literature_cards.json")}
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -143,9 +93,18 @@ def main(argv: list[str] | None = None) -> None:
     print("  graph:", graph.summary(), "| edges:", graph.meta)
 
     cfg = PipelineConfig(n_eval=args.n_eval, n_train=args.n_train, seed=args.seed,
-                         match_on_type="viral")
-    print("Running pipeline (candidates -> exclude -> 3-stream score -> fuse -> match/split) ...")
-    result = run_pipeline(graph, cfg)
+                         match_on_type="viral", gated_max=args.literature_k)
+
+    # Build the hourglass filters; the gated literature filter runs the LLM
+    # in-pipeline and is fused into confidence (skips itself without a key).
+    filters = build_filters(cfg.modality, ["known_positive_veto", "structured", "embedding"])
+    if not args.no_literature:
+        filters.append(LiteratureFilter(enabled=True, provider=args.provider, model=args.model))
+        print(f"Literature stream: enabled (provider={args.provider}, "
+              f"up to {args.literature_k} contested pairs)")
+
+    print("Running pipeline (VETO funnel -> GRADED parallel -> GATED literature -> match/split) ...")
+    result = run_pipeline(graph, cfg, filters=filters)
 
     # ---- validation ----
     eval_records = [r for r in result.records if r.mode == "eval"]
@@ -161,11 +120,10 @@ def main(argv: list[str] | None = None) -> None:
     except FileNotFoundError:
         validation["gold_recall"] = {"note": "negatome2 files not found"}
 
-    # ---- gated literature-reasoning pass (§5.2), on by default ----
-    if not args.no_literature:
-        validation["literature"] = _run_literature(
-            graph, result, provider=args.provider, model=args.model, k=args.literature_k,
-            out=out)
+    # ---- gated literature verdicts (fused in-pipeline; extract cards) ----
+    validation["literature"] = (
+        {"status": "disabled"} if args.no_literature
+        else _collect_literature(result.records, out))
 
     # ---- write outputs ----
     rows = [r.as_row() for r in result.records]

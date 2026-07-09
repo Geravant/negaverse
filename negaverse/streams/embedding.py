@@ -15,11 +15,14 @@ from __future__ import annotations
 
 from ..graph import TypedInteractionGraph
 from ..schema import StreamScore
-from .base import Stream
+from .base import Filter, Stage
+from .registry import register
 
 
-class EmbeddingStream(Stream):
+@register
+class EmbeddingStream(Filter):
     name = "embedding"
+    stage = Stage.GRADED
 
     def __init__(self) -> None:
         self._nbr: dict[str, set[str]] = {}

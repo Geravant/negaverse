@@ -1,0 +1,24 @@
+# Structural / biological rules for protein–ligand interactions.
+# See rules/README.md for the field contract.
+
+- id: ligand_pocket_size_mismatch
+  modality: pli
+  applies_to: [protein, ligand]
+  when: "ligand.volume > protein.pocket_volume * 1.5"
+  effect: safer_negative
+  weight: 0.7
+  rationale: >
+    A ligand substantially larger than the target's binding pocket cannot be
+    accommodated, so a non-edge is a safe negative.
+  source: "TODO — pocket volume source (e.g. fpocket / PDB) to confirm"
+
+- id: physicochemical_incompatibility
+  modality: pli
+  applies_to: [protein, ligand]
+  when: "ligand.logp > 5 and protein.pocket_polarity == 'polar'"
+  effect: safer_negative
+  weight: 0.4
+  rationale: >
+    A highly lipophilic ligand is a poor fit for a strongly polar pocket,
+    lowering the plausibility of binding.
+  source: "TODO — thresholds to confirm"

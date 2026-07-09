@@ -1,24 +1,42 @@
-"""The scoring-stream interface (ARCHITECTURE.md §5).
+"""The filter interface + hourglass stages (see docs/IMPLEMENTATION-PLAN.md).
 
-Confidence is a fusion of independent views. Keeping streams behind one
-interface means each can be validated, ablated, and trusted on its own — and
-new streams (graph embeddings, KG link-prediction) drop in without touching the
-pipeline. A stream may score, abstain, or hard-veto.
+Every scoring method is a small independent **Filter** that declares which
+hourglass stage it runs in and which modalities it applies to, then returns a
+score / veto / flags / evidence for a candidate pair. New filters are added by
+subclassing this and registering (see registry.py + docs/ADDING-A-FILTER.md) —
+no pipeline edits required.
+
+Stages (the hourglass):
+  VETO   — cheap hard filters run first; a veto drops the candidate (funnel).
+  GRADED — cheap graded filters run in parallel on survivors; scores are merged.
+  GATED  — expensive filters (LLM/literature) run only on the contested tail.
 """
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from enum import Enum
 from typing import Sequence
 
 from ..graph import TypedInteractionGraph
 from ..schema import StreamScore
 
 
-class Stream(ABC):
+class Stage(str, Enum):
+    VETO = "veto"
+    GRADED = "graded"
+    GATED = "gated"
+
+
+class Filter(ABC):
+    #: unique, stable name (appears in provenance and config)
     name: str
+    #: where this filter runs in the hourglass
+    stage: Stage = Stage.GRADED
+    #: interaction types this filter applies to
+    modalities: frozenset = frozenset({"ppi", "pli"})
 
     def fit(self, graph: TypedInteractionGraph) -> None:
-        """Optional: precompute over the graph before scoring (e.g. embeddings)."""
+        """Optional: precompute over the graph before scoring."""
 
     @abstractmethod
     def score(self, graph: TypedInteractionGraph, u: str, v: str) -> StreamScore:
@@ -28,3 +46,7 @@ class Stream(ABC):
         self, graph: TypedInteractionGraph, pairs: Sequence[tuple[str, str]]
     ) -> list[StreamScore]:
         return [self.score(graph, u, v) for u, v in pairs]
+
+
+# Back-compat alias: earlier code referred to filters as "streams".
+Stream = Filter

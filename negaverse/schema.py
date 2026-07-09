@@ -26,6 +26,7 @@ class StreamScore:
     value: Optional[float]
     veto: bool = False
     evidence: dict[str, Any] = field(default_factory=dict)
+    flags: list[str] = field(default_factory=list)
 
     @property
     def abstains(self) -> bool:
