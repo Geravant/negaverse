@@ -67,6 +67,15 @@ curl -kL -o local-docs/huri/HuRI.tsv http://www.interactome-atlas.org/data/HuRI.
 
 A homogeneous human protein–protein interaction map (~52k edges, Ensembl-keyed). Used to test whether negaverse's hard negatives train a better link-prediction model than random negatives (AUROC/AUPRC).
 
+**4. Gold test negatives — Negatome in HuRI space** (optional, for the *fair* benchmark). HuRI is Ensembl-keyed and Negatome UniProt-keyed, so map Negatome into HuRI's node space once (pulls Ensembl gene IDs from UniProt; writes a gitignored cache):
+
+```bash
+PYTHONPATH=. python scripts/build_uniprot_ensembl_map.py   # -> local-docs/mappings/uniprot_to_ensembl.tsv
+python -m negaverse.bench --gold-test-neg --features spectral
+```
+
+Without this, the benchmark tests against *easy* random negatives, which understates the value of hard negatives (see [`docs/BENCHMARK-FINDINGS.md`](docs/BENCHMARK-FINDINGS.md)). With `--gold-test-neg`, the test negatives are biologically-validated non-interactions — the meaningful comparison.
+
 **Custom paths.** Loaders accept a `path=` argument, so you can store the files anywhere:
 
 ```python

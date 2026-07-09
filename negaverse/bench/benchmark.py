@@ -105,10 +105,11 @@ class BenchmarkResult:
     n_positives: int
     n_test: int
     feature_set: str = "topological"
+    test_neg_source: str = "random"
 
     def summary(self) -> str:
         lines = [f"positives={self.n_positives}  test_pairs={2 * self.n_test}  "
-                 f"features={self.feature_set}"]
+                 f"features={self.feature_set}  test_neg={self.test_neg_source}"]
         for s, m in self.strategies.items():
             lines.append(f"  {s:<10} AUROC={m['auroc']:.4f}  AUPRC={m['auprc']:.4f}  "
                          f"(train_neg={m['n_train_neg']})")
@@ -132,7 +133,13 @@ def _negaverse_negatives(graph, train_pos, node_type, n, seed, max_pool):
 def run_benchmark(graph: TypedInteractionGraph, seed: int = 0, test_frac: float = 0.2,
                   max_positives: int | None = 10_000, max_pool: int = 40_000,
                   strategies=("random", "negaverse"),
-                  feature_set: str = "topological", emb_dim: int = 32) -> BenchmarkResult:
+                  feature_set: str = "topological", emb_dim: int = 32,
+                  gold_test_neg: set | None = None) -> BenchmarkResult:
+    """If `gold_test_neg` (a set of frozenset pairs in the graph's node space,
+    e.g. Negatome mapped into HuRI) is given, the test negatives are these
+    *hard, biologically-validated* non-interactions instead of easy random pairs
+    — the fair test for whether hard training negatives generalize (see
+    docs/BENCHMARK-FINDINGS.md)."""
     rng = np.random.default_rng(seed)
     pos = [tuple(e) for e in graph.g.edges()]
     if max_positives and len(pos) > max_positives:
@@ -146,9 +153,23 @@ def run_benchmark(graph: TypedInteractionGraph, seed: int = 0, test_frac: float 
     node_type = {n: "protein" for n in graph.g.nodes()}
     pos_set = {frozenset(e) for e in pos}                 # never emit any known positive
     nodes = list(graph.g.nodes())
+    node_set = set(nodes)
 
-    # fixed unbiased test negatives (same for every strategy)
-    test_neg = _random_nonedges(nodes, pos_set, len(test_pos), rng)
+    # test negatives: gold (hard) if supplied, else fixed unbiased random
+    test_neg_source = "random"
+    if gold_test_neg:
+        gold = [tuple(p) for p in gold_test_neg
+                if p not in pos_set and set(p) <= node_set]
+        rng.shuffle(gold)
+        if gold:
+            test_neg_source = "gold"
+            # balance the test set: pos and neg equal-sized
+            n_bal = min(len(test_pos), len(gold))
+            test_pos = test_pos[:n_bal]
+            test_neg = gold[:n_bal]
+            n_test = n_bal
+    if test_neg_source == "random":
+        test_neg = _random_nonedges(nodes, pos_set, len(test_pos), rng)
     test_excl = {frozenset(p) for p in test_neg}
 
     # features come from the TRAIN graph only (no test edge ever enters a feature)
@@ -188,4 +209,4 @@ def run_benchmark(graph: TypedInteractionGraph, seed: int = 0, test_frac: float 
             "n_train_neg": len(train_neg),
         }
     return BenchmarkResult(strategies=out, n_positives=len(pos), n_test=n_test,
-                           feature_set=feature_set)
+                           feature_set=feature_set, test_neg_source=test_neg_source)
