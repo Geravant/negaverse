@@ -9,6 +9,7 @@
   when: "disjoint(a.compartments, b.compartments)"
   effect: safer_negative            # safer_negative | riskier_negative | veto
   weight: 0.8
+  flag: different_compartment
   rationale: >
     Two proteins that never share a subcellular compartment cannot physically
     interact, so a non-edge between them is a safe negative.

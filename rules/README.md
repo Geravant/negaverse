@@ -23,21 +23,27 @@ One consumer, two uses:
 | `weight` | ✓ | contribution to the graded score, `[0,1]` (ignored for `veto`) |
 | `rationale` | ✓ | natural-language justification fed to the LLM |
 | `source` | – | provenance / citation (use `TODO` while sourcing) |
+| `flag` | – | short tag added to a record when the rule fires (defaults to `id`) |
 
-## Two open choices for the loader (Phase 1)
+## `when` expression language (implemented)
 
-1. **`when` expression language.** Prefer a **fixed set of named predicates**
-   (`disjoint(...)`, comparisons over declared annotation fields) over a general
-   `eval()` — avoids an eval sandbox and keeps rules auditable. The examples use
-   both a `disjoint(a.x, b.x)` predicate and simple comparisons; the loader
-   defines which predicates/fields are legal.
-2. **Where annotations come from.** Each entity needs an annotation record
-   (compartments, hydrophobicity, pocket volume, logP, …) keyed by UniProt (protein)
-   or InChIKey (ligand). The loader supplies these from a per-modality annotation
-   table; a rule whose fields are missing simply abstains for that pair.
+A restricted, **safe** Python expression — parsed and whitelisted via `ast`, never
+`eval()`ed (`negaverse/rule_engine.py`). Allowed: boolean ops, comparisons,
+arithmetic, the named predicates `disjoint / overlap / shared / jaccard / contains`,
+`<entity>.<field>` access, and literals. Anything else is rejected at load.
+
+**Entity binding.** The two entities of a matched pair are always available as `a`
+and `b` (positional, in `applies_to` order); when the two `applies_to` types differ
+they are also bound by type name — so `pli` rules can say `protein.pocket_volume`
+and `ligand.volume`. A field absent from an entity's record → the rule abstains.
+
+**Annotations** (`negaverse/io/annotations.py`) are `dict[node -> dict[field -> value]]`,
+merged from whatever sources exist (currently `compartments` from GO cellular-component).
+Add an annotation type = load it there under a new field name.
 
 ## Status
 
-`ppi.yaml` and `pli.yaml` are **starter templates** — the schema is fixed, the
-thresholds/sources are placeholders (`TODO`) to be filled as rules are sourced.
-The filters that consume them are built in Phase 1.
+The generic loader + evaluator + `RuleGradedFilter`/`RuleVetoFilter` are **built**:
+every rule here becomes a filter automatically, no code. `colocalization_mismatch`
+is live (needs GO cellular-component annotations); the other rules are valid
+templates whose `TODO` annotation fields simply make them abstain until sourced.
