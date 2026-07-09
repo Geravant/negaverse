@@ -32,11 +32,12 @@ class LiteratureFilter(Filter):
     stage = Stage.GATED
 
     def __init__(self, enabled: bool = False, provider: str = "auto",
-                 model: Optional[str] = None, max_tokens: int = 1024):
+                 model: Optional[str] = None, max_tokens: int = 1024, votes: int = 5):
         self.enabled = enabled
         self.provider = provider
         self.model = model
         self.max_tokens = max_tokens
+        self.votes = votes                       # best-of-N majority vote (1 = single call)
         self._reasoner = None
         self._resolved: Optional[str] = None
         self._initialized = False
@@ -84,7 +85,7 @@ class LiteratureFilter(Filter):
         ctx = {"u_type": graph.node_type.get(u), "v_type": graph.node_type.get(v),
                "u_degree": graph.degree(u), "v_degree": graph.degree(v)}
         try:
-            card = self._reasoner.reason(u, v, ctx)
+            card = self._reasoner.reason_vote(u, v, ctx, votes=self.votes)
         except Exception:
             sc = self._skip("llm_error")
             self._cache[key] = sc
@@ -103,7 +104,9 @@ class LiteratureFilter(Filter):
             self.name, value=value, flags=flags,
             evidence={"gated_status": "reviewed", "verdict": verdict,
                       "verdict_confidence": round(conf, 4), "rationale": card.rationale,
-                      "evidence": card.evidence, "model": card.model},
+                      "evidence": card.evidence, "model": card.model,
+                      "votes": card.n_votes, "agreement": card.agreement,
+                      "vote_counts": card.vote_counts},
         )
         self._cache[key] = sc
         return sc

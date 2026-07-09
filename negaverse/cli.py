@@ -52,8 +52,11 @@ def _collect_literature(records, out) -> dict:
             continue
         seen.add((r.u, r.v))
         cards.append({"u": r.u, "v": r.v, "verdict": g["verdict"],
-                      "confidence": g["verdict_confidence"], "rationale": g["rationale"],
-                      "evidence": g["evidence"], "model": g["model"]})
+                      "confidence": g["verdict_confidence"],
+                      "votes": g.get("votes"), "agreement": g.get("agreement"),
+                      "vote_counts": g.get("vote_counts"),
+                      "rationale": g["rationale"], "evidence": g["evidence"],
+                      "model": g["model"]})
     if not cards:
         return {"status": "skipped", "reason": "no cards (no key or no contested pairs)"}
     with open(out / "literature_cards.json", "w") as fh:
@@ -81,6 +84,8 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--model", type=str, default=None, help="override the LLM model id")
     ap.add_argument("--literature-k", type=int, default=8,
                     help="how many contested pairs to send to the LLM")
+    ap.add_argument("--votes", type=int, default=5,
+                    help="best-of-N majority vote per pair (1 = single call)")
     args = ap.parse_args(argv)
 
     _load_dotenv()  # pick up ANTHROPIC_API_KEY / OPENROUTER_API_KEY from .env if present
@@ -99,9 +104,10 @@ def main(argv: list[str] | None = None) -> None:
     # in-pipeline and is fused into confidence (skips itself without a key).
     filters = build_filters(cfg.modality, ["known_positive_veto", "structured", "embedding"])
     if not args.no_literature:
-        filters.append(LiteratureFilter(enabled=True, provider=args.provider, model=args.model))
+        filters.append(LiteratureFilter(enabled=True, provider=args.provider,
+                                        model=args.model, votes=args.votes))
         print(f"Literature stream: enabled (provider={args.provider}, "
-              f"up to {args.literature_k} contested pairs)")
+              f"up to {args.literature_k} contested pairs, best-of-{args.votes} vote)")
 
     print("Running pipeline (VETO funnel -> GRADED parallel -> GATED literature -> match/split) ...")
     result = run_pipeline(graph, cfg, filters=filters)
