@@ -126,6 +126,8 @@ The literature scorer runs by default and also writes `out/literature_cards.json
 | Structured scoring | Removes known positives and applies simple safety rules. | Working (simple) |
 | Topology scoring | Link-prediction risk from graph structure (L3 length-3 paths + resource-allocation + configuration-model baseline). Positive-like pairs are riskier negatives; no-overlap pairs are easy negatives. | Working |
 | Rule-based biology (`rules/*.yaml`) | Declarative biology rules become filters with no code — e.g. co-localization (`disjoint(a.compartments, b.compartments)` → safer negative). Each rule feeds both the deterministic check and the LLM's grounding. Independent of topology. Abstains until its annotation fields are supplied. | Working (engine + co-localization live) |
+
+Add a rule by hand with [`rules/AUTHORING.md`](rules/AUTHORING.md) (validate via `python scripts/validate_rules.py`), or from a paper with the `rule-from-literature` Claude skill (`.claude/skills/rule-from-literature/`).
 | Literature scoring | Uses an LLM to review the most uncertain pairs and return a structured risk judgment. | Working, on by default (skipped without a key) |
 
 

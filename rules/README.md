@@ -4,6 +4,12 @@ Declarative rules that feed negaverse's filters. A rule is added by editing a
 YAML file here — no code — which keeps the "dynamic, up-to-date reasoning" claim
 real and lets the biology side (rules) evolve independently of the engine.
 
+- **Writing a rule by hand:** [`AUTHORING.md`](AUTHORING.md) — the step-by-step,
+  with weight calibration and a validator (`scripts/validate_rules.py`).
+- **Writing a rule from a paper:** the `rule-from-literature` Claude skill
+  (`.claude/skills/rule-from-literature/`) — give it a PDF/URL/abstract and it
+  drafts, validates, and appends the rule.
+
 One consumer, two uses:
 - **Deterministic filters** evaluate the machine-checkable `when` condition
   against entity annotations and apply `effect`/`weight` to the graded score.
