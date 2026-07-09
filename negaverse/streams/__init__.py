@@ -6,12 +6,12 @@ subclassing Filter and decorating with @register (docs/ADDING-A-FILTER.md).
 from .base import Filter, Stream, Stage
 from .registry import register, registered, build_filters
 from .structured import KnownPositiveVeto, StructuredStream
-from .embedding import EmbeddingStream
+from .topology import TopologyFilter
 from .literature import LiteratureFilter, LiteratureStream
 
 __all__ = [
     "Filter", "Stream", "Stage",
     "register", "registered", "build_filters",
-    "KnownPositiveVeto", "StructuredStream", "EmbeddingStream",
+    "KnownPositiveVeto", "StructuredStream", "TopologyFilter",
     "LiteratureFilter", "LiteratureStream",
 ]

@@ -102,7 +102,7 @@ def main(argv: list[str] | None = None) -> None:
 
     # Build the hourglass filters; the gated literature filter runs the LLM
     # in-pipeline and is fused into confidence (skips itself without a key).
-    filters = build_filters(cfg.modality, ["known_positive_veto", "structured", "embedding"])
+    filters = build_filters(cfg.modality, ["known_positive_veto", "structured", "topology"])
     if not args.no_literature:
         filters.append(LiteratureFilter(enabled=True, provider=args.provider,
                                         model=args.model, votes=args.votes))
@@ -152,7 +152,7 @@ def main(argv: list[str] | None = None) -> None:
 
     print("\n=== sample records ===")
     show = [c for c in ["u", "v", "mode", "confidence", "hardness",
-                        "stream_structured", "stream_embedding", "flags"]
+                        "stream_structured", "stream_topology", "flags"]
             if c in df.columns]
     print(df[show].sort_values("confidence", ascending=False).head(6).to_string(index=False))
     fn = df[df["flags"].str.contains("suspected_false_negative", na=False)]

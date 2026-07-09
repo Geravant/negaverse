@@ -85,7 +85,7 @@ def _negaverse_negatives(graph, train_pos, node_type, n, seed, max_pool):
         train_pos, dict(node_type), admissible_types=[("protein", "protein")],
         name="bench-train")
     cfg = PipelineConfig(modality="ppi", n_eval=0, n_train=n, max_pool=max_pool, seed=seed,
-                         filters=["known_positive_veto", "structured", "embedding"])
+                         filters=["known_positive_veto", "structured", "topology"])
     res = run_pipeline(tg, cfg)
     return [(r.u, r.v) for r in res.records if r.mode == "train"]
 

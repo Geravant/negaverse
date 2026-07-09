@@ -97,8 +97,11 @@ def run_pipeline(
         if fused.vetoed:              # a graded filter may still hard-veto
             n_vetoed += 1
             continue
-        emb = next((s for s in scores if s.stream == "embedding"), None)
-        topo = (emb.evidence.get("topo", 0.0) if emb and emb.evidence else 0.0)
+        # hardness driver = the topology filter's link-likelihood ("risk"); the
+        # higher it is, the more the pair resembles a real edge (harder negative).
+        topo_s = next((s for s in scores if s.stream in ("topology", "embedding")), None)
+        ev = (topo_s.evidence or {}) if topo_s else {}
+        topo = ev.get("risk", ev.get("topo", 0.0))
         topo_raw.append(topo)
         staged.append((u, v, dict(fused.sub_scores), topo))
 

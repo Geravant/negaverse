@@ -17,7 +17,7 @@ def test_builtin_stages_registered():
     reg = registered()
     assert reg["known_positive_veto"].stage == Stage.VETO
     assert reg["structured"].stage == Stage.GRADED
-    assert reg["embedding"].stage == Stage.GRADED
+    assert reg["topology"].stage == Stage.GRADED
     assert reg["literature"].stage == Stage.GATED
 
 
@@ -52,7 +52,7 @@ def test_new_graded_filter_flows_through_without_pipeline_edits():
     # explicit selection so we don't depend on other registered filters
     result = run_pipeline(graph, PipelineConfig(
         n_eval=50, n_train=50, match_on_type="viral",
-        filters=["known_positive_veto", "const_test", "embedding"]))
+        filters=["known_positive_veto", "const_test", "topology"]))
     assert result.records
     r = result.records[0]
     assert "const_test" in r.streams and r.streams["const_test"] == 0.5
@@ -61,8 +61,8 @@ def test_new_graded_filter_flows_through_without_pipeline_edits():
 
 def test_build_filters_by_modality():
     ppi = [f.name for f in build_filters("ppi",
-           names=["known_positive_veto", "structured", "embedding", "literature"])]
-    assert ppi == ["known_positive_veto", "structured", "embedding", "literature"]
+           names=["known_positive_veto", "structured", "topology", "literature"])]
+    assert ppi == ["known_positive_veto", "structured", "topology", "literature"]
 
 
 if __name__ == "__main__":
