@@ -8,11 +8,18 @@ Design (avoids the obvious leakage/circularity traps):
     same test set for every strategy, per Park & Marcotte);
   * compare training with random negatives vs negaverse (hard) negatives.
 
-Caveat (worth stating in results): pair features are topological and negaverse
-selects negatives partly by topology + degree, so there is some overlap between
-the selection signal and the feature space. The test negatives are held fixed
-and unbiased, so the comparison is still meaningful, but node2vec/ESM2 features
-would make it more rigorous.
+Feature families (choose with `feature_set`):
+  * "topological" — hand-crafted local indices (CN, Jaccard, Adamic-Adar, RA,
+    preferential attachment). Cheap, but note negaverse selects negatives partly
+    by L3/RA topology, so these features share signal with the selection —
+    inflating the comparison.
+  * "spectral" — truncated-SVD node embeddings of the TRAIN adjacency, combined
+    per pair with the Hadamard operator (the standard node2vec link-prediction
+    feature). Structurally *independent* of the L3/Jaccard selection indices, so
+    a margin that survives here is not an artifact of feature/selection overlap.
+
+The test negatives are held fixed and unbiased for every strategy, so the
+comparison is meaningful under either family; running both is the rigour check.
 """
 from __future__ import annotations
 
@@ -21,6 +28,8 @@ from dataclasses import dataclass
 
 import networkx as nx
 import numpy as np
+import scipy.sparse as sp
+from scipy.sparse.linalg import svds
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import roc_auc_score, average_precision_score
 
@@ -42,6 +51,34 @@ def _features(adj: dict[str, set], pairs) -> np.ndarray:
         ra = sum(1.0 / len(adj[w]) for w in cn if adj.get(w))
         X.append([len(nu), len(nv), len(cn), jacc, aa, ra, len(nu) * len(nv)])
     return np.asarray(X, dtype=float)
+
+
+def _spectral_embeddings(train_G: nx.Graph, nodes: list, dim: int, seed: int):
+    """Truncated-SVD node embeddings of the TRAIN adjacency (features never see
+    a test edge). Independent of the hand-crafted L3/Jaccard indices."""
+    idx = {n: i for i, n in enumerate(nodes)}
+    n = len(nodes)
+    rows, cols = [], []
+    for a, b in train_G.edges():
+        i, j = idx[a], idx[b]
+        rows += [i, j]
+        cols += [j, i]
+    k = max(1, min(dim, n - 2))
+    if not rows:
+        return np.zeros((n, k)), idx, k
+    A = sp.csr_matrix((np.ones(len(rows)), (rows, cols)), shape=(n, n)).asfptype()
+    rng = np.random.default_rng(seed)
+    v0 = rng.standard_normal(min(A.shape))
+    U, S, _ = svds(A, k=k, v0=v0)
+    return U * S, idx, k                       # scale components by singular value
+
+
+def _hadamard_features(emb: np.ndarray, idx: dict, pairs) -> np.ndarray:
+    zero = np.zeros(emb.shape[1])
+    return np.asarray([
+        emb[idx[u]] * emb[idx[v]] if u in idx and v in idx else zero
+        for u, v in pairs
+    ], dtype=float)
 
 
 def _random_nonedges(nodes, positives: set, n: int, rng, exclude: set | None = None):
@@ -67,9 +104,11 @@ class BenchmarkResult:
     strategies: dict           # {strategy: {auroc, auprc, n_train_neg}}
     n_positives: int
     n_test: int
+    feature_set: str = "topological"
 
     def summary(self) -> str:
-        lines = [f"positives={self.n_positives}  test_pairs={2 * self.n_test}"]
+        lines = [f"positives={self.n_positives}  test_pairs={2 * self.n_test}  "
+                 f"features={self.feature_set}"]
         for s, m in self.strategies.items():
             lines.append(f"  {s:<10} AUROC={m['auroc']:.4f}  AUPRC={m['auprc']:.4f}  "
                          f"(train_neg={m['n_train_neg']})")
@@ -92,7 +131,8 @@ def _negaverse_negatives(graph, train_pos, node_type, n, seed, max_pool):
 
 def run_benchmark(graph: TypedInteractionGraph, seed: int = 0, test_frac: float = 0.2,
                   max_positives: int | None = 10_000, max_pool: int = 40_000,
-                  strategies=("random", "negaverse")) -> BenchmarkResult:
+                  strategies=("random", "negaverse"),
+                  feature_set: str = "topological", emb_dim: int = 32) -> BenchmarkResult:
     rng = np.random.default_rng(seed)
     pos = [tuple(e) for e in graph.g.edges()]
     if max_positives and len(pos) > max_positives:
@@ -111,13 +151,21 @@ def run_benchmark(graph: TypedInteractionGraph, seed: int = 0, test_frac: float 
     test_neg = _random_nonedges(nodes, pos_set, len(test_pos), rng)
     test_excl = {frozenset(p) for p in test_neg}
 
-    # features come from the TRAIN graph only
+    # features come from the TRAIN graph only (no test edge ever enters a feature)
     train_G = nx.Graph()
     train_G.add_nodes_from(nodes)
     train_G.add_edges_from(train_pos)
-    adj = {n: set(train_G[n]) for n in train_G}
 
-    Xte = _features(adj, list(test_pos) + list(test_neg))
+    if feature_set == "spectral":
+        emb, idx, _ = _spectral_embeddings(train_G, nodes, emb_dim, seed)
+        featurize = lambda pairs: _hadamard_features(emb, idx, pairs)
+    elif feature_set == "topological":
+        adj = {n: set(train_G[n]) for n in train_G}
+        featurize = lambda pairs: _features(adj, pairs)
+    else:
+        raise ValueError(f"unknown feature_set: {feature_set!r}")
+
+    Xte = featurize(list(test_pos) + list(test_neg))
     yte = np.r_[np.ones(len(test_pos)), np.zeros(len(test_neg))]
 
     out: dict[str, dict] = {}
@@ -129,7 +177,7 @@ def run_benchmark(graph: TypedInteractionGraph, seed: int = 0, test_frac: float 
             train_neg = _random_nonedges(nodes, pos_set, len(train_pos), rng, exclude=test_excl)
         if not train_neg:
             continue
-        Xtr = _features(adj, list(train_pos) + list(train_neg))
+        Xtr = featurize(list(train_pos) + list(train_neg))
         ytr = np.r_[np.ones(len(train_pos)), np.zeros(len(train_neg))]
         clf = RandomForestClassifier(n_estimators=200, random_state=seed, n_jobs=-1)
         clf.fit(Xtr, ytr)
@@ -139,4 +187,5 @@ def run_benchmark(graph: TypedInteractionGraph, seed: int = 0, test_frac: float 
             "auprc": round(float(average_precision_score(yte, p)), 4),
             "n_train_neg": len(train_neg),
         }
-    return BenchmarkResult(strategies=out, n_positives=len(pos), n_test=n_test)
+    return BenchmarkResult(strategies=out, n_positives=len(pos), n_test=n_test,
+                           feature_set=feature_set)
