@@ -87,7 +87,7 @@ def compute_traces(graph: TypedInteractionGraph, records, seed: int = 0,
                        "name": f"{name} ({len(xs)})", "x": xs, "y": ys, "z": zs,
                        "text": txt, "hoverinfo": "text",
                        "marker": {"size": 3, "color": col, "opacity": 0.75}})
-    layout = {"scene": {"xaxis": {"title": "looks like a real interaction"},
+    layout = {"scene": {"xaxis": {"title": "looks real (network shape)"},
                         "yaxis": {"title": "biology allows it (compartments)"},
                         "zaxis": {"title": "chemistry match (hydrophobicity)"}},
               "margin": {"l": 0, "r": 0, "t": 0, "b": 0},

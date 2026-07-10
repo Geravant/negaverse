@@ -143,10 +143,17 @@ def _interactive_panel(out_dir: Path) -> str:
     from .interactive import get_plotly_js
     lib = get_plotly_js()
     head = ('<section class="panel"><h2>Interactive 3D map — drag to rotate, scroll to zoom, '
-            'hover a dot</h2><p class="cap">Three independent lenses: how much a pair '
-            '<b>looks like a real interaction</b> (x), whether <b>biology allows it</b> — shared '
-            'cell compartments (y), and <b>chemistry match</b> — hydrophobicity (z). Hover any point '
-            'for the two proteins and why it is flagged. Colours are the four regimes.</p>')
+            'hover a dot</h2><p class="cap">Three independent lenses:<br>'
+            '&bull; <b>x — looks like a real interaction:</b> judged only from the <i>shape</i> of '
+            'the known interaction network. Two proteins score high when they sit where real '
+            'partners usually sit — linked through short chains of shared partners (friend-of-a-'
+            'friend patterns that interacting proteins tend to show) — even if no direct link is '
+            'recorded between them. High = the network thinks they <i>should</i> interact.<br>'
+            '&bull; <b>y — biology allows it:</b> do the two proteins share a cell compartment, so '
+            'they could physically meet (from GO cellular-component).<br>'
+            '&bull; <b>z — chemistry match:</b> how similar their surface hydrophobicity is.<br>'
+            'Colours are the four regimes; hover any point for the two proteins and why it is '
+            'flagged.</p>')
     if not lib:
         return (head + '<p class="cap"><i>The interactive view needs the Plotly library, which '
                 'is fetched once when the report is built online. Re-run the dashboard with an '
