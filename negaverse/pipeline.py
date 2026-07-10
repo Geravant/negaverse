@@ -101,6 +101,7 @@ def run_pipeline(
     kept: list[Scored] = []
     topo_raw: list[float] = []
     staged: list[tuple[str, str, dict, float]] = []
+    graded_flags: dict[tuple[str, str], list[str]] = {}
     for (u, v) in survivors:
         scores = [f.score(graph, u, v) for f in graded_f]
         fused = (entropy_weighted_fuse(scores, cfg.weights, cfg.fusion_lam)
@@ -108,6 +109,11 @@ def run_pipeline(
         if fused.vetoed:              # a graded filter may still hard-veto
             n_vetoed += 1
             continue
+        # carry graded-filter flags (e.g. a rule's `different_compartment`,
+        # topology's `easy_negative`) through to the emitted record for auditability
+        fl = [f for sc in scores for f in sc.flags]
+        if fl:
+            graded_flags[(u, v)] = fl
         # hardness driver = the topology filter's link-likelihood ("risk"); the
         # higher it is, the more the pair resembles a real edge (harder negative).
         topo_s = next((s for s in scores if s.stream in ("topology", "embedding")), None)
@@ -173,9 +179,9 @@ def run_pipeline(
                                                 cfg.fusion_mode, cfg.fusion_lam)
 
     records: list[NegativeRecord] = []
-    records += [_record(graph, s, "eval", cfg, score_names, gated_flags, gated_evidence)
+    records += [_record(graph, s, "eval", cfg, score_names, gated_flags, gated_evidence, graded_flags)
                 for s in eval_set]
-    records += [_record(graph, s, "train", cfg, score_names, gated_flags, gated_evidence)
+    records += [_record(graph, s, "train", cfg, score_names, gated_flags, gated_evidence, graded_flags)
                 for s in train_set]
 
     # suspected false negatives: pool-relative lowest-confidence tail
@@ -220,8 +226,12 @@ def _contested(kept: list[Scored], pct: float, gated_max: int | None) -> list[Sc
 
 
 def _record(graph: TypedInteractionGraph, s: Scored, mode: str, cfg: PipelineConfig,
-            score_names: list[str], gated_flags: dict, gated_evidence: dict) -> NegativeRecord:
+            score_names: list[str], gated_flags: dict, gated_evidence: dict,
+            graded_flags: dict | None = None) -> NegativeRecord:
     flags: list[str] = list(gated_flags.get((s.u, s.v), []))
+    for f in (graded_flags or {}).get((s.u, s.v), []):
+        if f not in flags:
+            flags.append(f)
     if s.hardness >= 0.9:
         flags.append("near_boundary")
     prov = {
