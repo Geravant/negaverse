@@ -22,3 +22,15 @@
     A highly lipophilic ligand is a poor fit for a strongly polar pocket,
     lowering the plausibility of binding.
   source: "TODO — thresholds to confirm"
+
+- id: lineage_restricted_ligand_mismatch
+  modality: pli
+  applies_to: [protein, ligand]
+  when: "ligand.lineage_specificity == 'restricted_lineage' and disjoint(ligand.restricted_lineage_taxids, protein.lineage_taxids)"
+  effect: safer_negative
+  weight: 0.5                       # lineage-specific ligand w/o conserved partner: 0.4-0.6
+  rationale: >
+    A ligand restricted to a lineage whose taxids don't appear anywhere in
+    this protein's ancestor lineage lacks the corresponding ortholog or
+    conserved binding pocket, so a non-edge is a safer negative.
+  source: "TODO — NCBI taxid lineage source to confirm"
