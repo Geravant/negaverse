@@ -195,16 +195,16 @@ def plot_flag_breakdown(records, out_path: str | Path) -> Path:
     from collections import Counter
     c = Counter(f for r in records for f in r.flags)
     if not c:
-        c = Counter({"(no notes)": len(records)})
-    labels, vals = zip(*c.most_common())
-    labels = [_flag_label(l) for l in labels]
+        c = Counter({"(no flags)": len(records)})
+    labels, vals = zip(*c.most_common())         # raw provenance flag ids (audit panel)
     fig, ax = plt.subplots(figsize=(8.5, max(2.4, 0.55 * len(labels) + 1)))
     y = np.arange(len(labels))[::-1]
     ax.barh(y, vals, color="#2a9d8f", height=0.6)
     for yi, v in zip(y, vals):
         ax.text(v, yi, f"  {v}", va="center", fontsize=10)
-    ax.set_yticks(y); ax.set_yticklabels(labels)
-    ax.set_xlabel("number of pairs"); ax.set_title("Why each pair was labelled the way it was")
+    ax.set_yticks(y); ax.set_yticklabels(labels, fontfamily="monospace", fontsize=9)
+    ax.set_xlabel("number of emitted pairs")
+    ax.set_title("Provenance flags per emitted pair")
     ax.margins(x=0.15); fig.tight_layout()
     out_path = Path(out_path); fig.savefig(out_path, dpi=130); plt.close(fig)
     return out_path

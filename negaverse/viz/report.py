@@ -48,10 +48,17 @@ _PANELS = {
         "<span style='color:#e9c46a'>training set</span> (deliberately challenging), and the "
         "<span style='color:#e63946'>risky tail</span> we flag as maybe-really-interacting."),
     "flag_breakdown.png": (
-        "Why each pair was labelled the way it was",
-        "Counts of the plain-language notes we attach to each pair (e.g. the two proteins live in "
-        "different parts of the cell, or the pair sits suspiciously close to real interactions). "
-        "<b>Look for:</b> every pair we output comes with a reason, not a black-box score."),
+        "Provenance flags per emitted pair",
+        "The audit trail: which flags each filter attached during scoring. "
+        "<code>different_compartment</code> = the two proteins share no GO cellular-component term "
+        "(co-localization rule fired). "
+        "<code>no_shared_neighbors_low_expected_edge</code> = no common graph neighbours and a "
+        "near-zero configuration-model expected-edge count (topology rule). "
+        "<code>near_boundary</code> = hardness ≥ 0.90 (top-decile topological closeness to the "
+        "positive manifold). "
+        "<code>suspected_false_negative</code> = bottom-quantile fused confidence — flagged for "
+        "review, not shipped as a confident negative. Full per-filter sub-scores + evidence are in "
+        "<code>out/negatives.jsonl</code>."),
     "funnel.png": (
         "How pairs were filtered, step by step",
         "We start from many candidate pairs and narrow down. <b>Look for:</b> quick rejects first, "
@@ -110,6 +117,48 @@ def _cards(stats: dict, validation: dict) -> list[tuple[str, str, str]]:
     return c
 
 
+def _esc(s: str) -> str:
+    return (str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+
+
+def _lit_details(out_dir: Path) -> str:
+    """Collapsible section showing the actual LLM literature checks, if present."""
+    p = out_dir / "literature_cards.json"
+    if not p.exists():
+        return ""
+    try:
+        cards = json.loads(p.read_text())
+    except Exception:
+        return ""
+    if not cards:
+        return ""
+    _V = {"safe_negative": "#2a9d8f", "uncertain": "#e9a13b",
+          "suspected_false_negative": "#e63946"}
+    rows = []
+    for c in cards:
+        col = _V.get(c.get("verdict", ""), "#888")
+        ev = "".join(f"<li>{_esc(e)}</li>" for e in c.get("evidence", []))
+        vc = ", ".join(f"{k}: {v}" for k, v in (c.get("vote_counts") or {}).items())
+        rows.append(
+            f'<details class="lit"><summary>'
+            f'<code>{_esc(c.get("u"))} × {_esc(c.get("v"))}</code> — '
+            f'<b style="color:{col}">{_esc(c.get("verdict"))}</b> '
+            f'<span class="mut">(agreement {c.get("agreement","?")}; votes — {_esc(vc)})</span>'
+            f'</summary>'
+            f'<p class="rat">{_esc(c.get("rationale",""))}</p>'
+            f'{f"<ul>{ev}</ul>" if ev else ""}'
+            f'<div class="mut sm">model: {_esc(c.get("model",""))}</div>'
+            f'</details>')
+    return (
+        '<section class="panel"><h2>AI literature review — the actual checks</h2>'
+        '<p class="cap">The LLM read the most uncertain pairs and returned a structured verdict '
+        'with a rationale and supporting points. <b>“uncertain”</b> means it would not confidently '
+        'call the pair a safe non-interaction (best-of-N majority vote; low agreement = genuinely '
+        'undecided). Click a pair to expand.</p>'
+        f'<details class="litwrap"><summary>Show {len(cards)} reviewed pairs</summary>'
+        + "".join(rows) + '</details></section>')
+
+
 def build_report(out_dir: str | Path, title: str = "negaverse", subtitle: str = "") -> Path:
     out_dir = Path(out_dir)
     stats_path = out_dir / "stats.json"
@@ -139,6 +188,7 @@ def build_report(out_dir: str | Path, title: str = "negaverse", subtitle: str = 
         f'<div class="h">{h}</div></div>'
         for k, v, h in _cards(stats, validation))
     panels = "".join(img_block(p) for p in ordered) or "<p>No panels found — run the viz first.</p>"
+    lit = _lit_details(out_dir)
 
     html = f"""<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -161,6 +211,12 @@ def build_report(out_dir: str | Path, title: str = "negaverse", subtitle: str = 
  .panel {{ background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px 18px; margin:20px 0; }}
  .panel h2 {{ margin:0 0 6px; font-size:18px; }} .cap {{ color:var(--mut); margin:0 0 12px; font-size:14px; }}
  .panel img {{ width:100%; height:auto; border-radius:6px; }}
+ code {{ background:rgba(127,127,127,.14); padding:1px 5px; border-radius:4px; font-size:12.5px; }}
+ .mut {{ color:var(--mut); }} .sm {{ font-size:12px; }} .rat {{ margin:8px 0; }}
+ .litwrap > summary {{ cursor:pointer; font-weight:600; padding:6px 0; }}
+ details.lit {{ border:1px solid var(--line); border-radius:8px; padding:8px 12px; margin:8px 0; }}
+ details.lit > summary {{ cursor:pointer; list-style:none; }}
+ details.lit ul {{ margin:6px 0 4px; padding-left:20px; }} details.lit li {{ margin:2px 0; font-size:13.5px; }}
 </style></head><body>
 <header><div class="wrap" style="padding-bottom:0"><h1>{title} — results</h1>
 <div class="sub">{sub}</div></div></header>
@@ -168,6 +224,7 @@ def build_report(out_dir: str | Path, title: str = "negaverse", subtitle: str = 
  <div class="intro">{_INTRO}</div>
  <div class="cards">{cards}</div>
  {panels}
+ {lit}
 </div></body></html>"""
     p = out_dir / "report.html"
     p.write_text(html)
