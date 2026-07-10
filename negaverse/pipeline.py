@@ -17,6 +17,7 @@ import numpy as np
 from .candidates import generate_candidates
 from .fusion import fuse
 from .graph import TypedInteractionGraph
+from .ig.entropy_fusion import binary_entropy, entropy_weighted_fuse
 from .matching import Scored, degree_matched_eval, hard_train
 from .schema import NegativeRecord, StreamScore
 from .streams import Filter, Stage, build_filters
@@ -40,6 +41,10 @@ class PipelineConfig:
     # max pairs sent to the (expensive) GATED filters; None = no cap.
     gated_max: int | None = 8
     sources_version: str = "sars-cov2-network/v1+negatome2"
+    # fusion strategy: "mean" = fixed-weight mean (default, unchanged);
+    # "entropy" = weight each stream by how decisive it is (IG Ch4, ig/).
+    fusion_mode: str = "mean"
+    fusion_lam: float = 1.0              # entropy sharpness; 0 == "mean"
 
 
 @dataclass
@@ -49,13 +54,18 @@ class PipelineResult:
 
 
 def _fuse_confidence(sub_scores: dict[str, float | None],
-                     weights: dict[str, float] | None) -> float:
+                     weights: dict[str, float] | None,
+                     mode: str = "mean", lam: float = 1.0) -> float:
     w = weights or {}
     num = den = 0.0
     for name, val in sub_scores.items():
         if val is None:
             continue
-        wt = w.get(name, 1.0)
+        base = w.get(name, 1.0)
+        # entropy mode: scale by decisiveness = 1 − binary-entropy of the score
+        # (a stream sitting at 0.5 is a guesser; near 0/1 it commits). Falls back
+        # to the plain mean at lam=0. See ig/entropy_fusion.py.
+        wt = base * (1.0 + lam * (1.0 - binary_entropy(val))) if mode == "entropy" else base
         num += wt * val
         den += wt
     return round(num / den, 4) if den > 0 else 0.5
@@ -93,7 +103,8 @@ def run_pipeline(
     staged: list[tuple[str, str, dict, float]] = []
     for (u, v) in survivors:
         scores = [f.score(graph, u, v) for f in graded_f]
-        fused = fuse(scores, cfg.weights)
+        fused = (entropy_weighted_fuse(scores, cfg.weights, cfg.fusion_lam)
+                 if cfg.fusion_mode == "entropy" else fuse(scores, cfg.weights))
         if fused.vetoed:              # a graded filter may still hard-veto
             n_vetoed += 1
             continue
@@ -114,7 +125,7 @@ def run_pipeline(
         pct = np.zeros(0)
     for i, (u, v, sub, topo) in enumerate(staged):
         sub = {**{n: None for n in score_names}, **sub}  # ensure all names present
-        conf = _fuse_confidence(sub, cfg.weights)
+        conf = _fuse_confidence(sub, cfg.weights, cfg.fusion_mode, cfg.fusion_lam)
         kept.append(Scored(u=u, v=v, confidence=conf,
                            hardness=round(float(pct[i]), 4), sub_scores=sub))
 
@@ -158,7 +169,8 @@ def run_pipeline(
             if reviewed:
                 gated_reviewed += 1
             if merged:
-                s.confidence = _fuse_confidence(s.sub_scores, cfg.weights)
+                s.confidence = _fuse_confidence(s.sub_scores, cfg.weights,
+                                                cfg.fusion_mode, cfg.fusion_lam)
 
     records: list[NegativeRecord] = []
     records += [_record(graph, s, "eval", cfg, score_names, gated_flags, gated_evidence)
