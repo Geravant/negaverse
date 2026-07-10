@@ -27,6 +27,18 @@ its reasoning. The panels below show how well it did on this run.
 
 # panel filename -> (title, caption). Captions are plain-language + "look for".
 _PANELS = {
+    "quadrant.png": (
+        "Two lenses at once — does it look real, and can biology allow it?",
+        "Left–right = does the pair <i>look</i> like a real interaction in the network. "
+        "Up–down = does biology <i>allow</i> it (do the two proteins share a cell compartment, "
+        "so they could meet). <b>Look for:</b> "
+        "<span style='color:#2a9d8f'>real interactions</span> and "
+        "<span style='color:#e63946'>risky pairs</span> in the top-right (look real + could meet — "
+        "the risky ones are likely hidden positives); "
+        "<span style='color:#e9c46a'>our chosen non-pairs</span> in the bottom-right (look real by "
+        "the network, but biology says they can't meet — the strong, useful negatives); "
+        "<span style='color:#adb5bd'>random pairs</span> off to the left. This is the picture of "
+        "why a hard negative can sit close to positives yet still be told apart."),
     "manifold.png": (
         "Map of protein pairs",
         "Every dot is a pair of proteins, placed so that similar pairs sit close together. "
@@ -64,7 +76,7 @@ _PANELS = {
         "We start from many candidate pairs and narrow down. <b>Look for:</b> quick rejects first, "
         "then scoring, then a small expert-reviewed set, ending with the pairs we keep."),
 }
-_ORDER = ["manifold.png", "separability.png", "confidence_hardness.png",
+_ORDER = ["quadrant.png", "manifold.png", "separability.png", "confidence_hardness.png",
           "flag_breakdown.png", "funnel.png"]
 
 

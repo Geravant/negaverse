@@ -157,6 +157,80 @@ def _is_risky(r) -> bool:
     return "suspected_false_negative" in r.flags
 
 
+def plot_quadrant(graph: TypedInteractionGraph, records, out_path: str | Path,
+                  seed: int = 0, n_ref: int = 500) -> Path:
+    """Two INDEPENDENT lenses at once (Lucy's three-regime framing):
+      x = "looks like a real interaction"  — network proximity (topology risk)
+      y = "biology says they can interact" — shared subcellular compartments
+    A pair can look real by the network yet be biologically impossible (bottom-
+    right) — those are the strong hard negatives; ones that look real AND could
+    co-locate (top-right, mixed with positives) are the risky suspected positives;
+    random pairs sit far left. Needs compartment annotations (rich on HuRI)."""
+    from ..streams import TopologyFilter
+    from ..io.annotations import build_annotation_table
+    tf = TopologyFilter(); tf.fit(graph)
+    ann = build_annotation_table()
+    rng = np.random.default_rng(seed)
+
+    def _risk(u, v):
+        s = tf.score(graph, u, v); ev = s.evidence or {}
+        return float(ev.get("risk", 0.0)) if s.value is not None else 0.0
+
+    def _biocompat(u, v):
+        cu, cv = ann.get(u, {}).get("compartments"), ann.get(v, {}).get("compartments")
+        if not cu or not cv:
+            return None                       # unannotated -> can't place on biology axis
+        union = len(cu | cv)
+        return len(cu & cv) / union if union else None
+
+    edges = [tuple(e) for e in graph.g.edges()]
+    if len(edges) > n_ref:
+        edges = [edges[i] for i in rng.choice(len(edges), n_ref, replace=False)]
+    hard = [(r.u, r.v) for r in records if r.mode == "train" and not _is_risky(r)]
+    risky = [(r.u, r.v) for r in records if _is_risky(r)]
+    rand = _random_nonedges(graph, n_ref, seed)
+    cats = [("real interactions", edges, "#2a9d8f", 0.45),
+            ("random non-pairs", rand, "#adb5bd", 0.4),
+            ("our chosen non-pairs", hard, "#e9c46a", 0.75),
+            ("risky — may interact", risky, "#e63946", 0.9)]
+
+    fig, ax = plt.subplots(figsize=(8, 6.6))
+    total = 0
+    for name, pairs, col, a in cats:
+        xs, ys = [], []
+        for u, v in pairs:
+            y = _biocompat(u, v)
+            if y is None:
+                continue
+            xs.append(_risk(u, v)); ys.append(y)
+        if xs:
+            yj = np.array(ys) + rng.uniform(-0.008, 0.008, len(ys))   # jitter the y=0 pile
+            ax.scatter(xs, yj, s=16, alpha=a, color=col, label=f"{name} (n={len(xs)})")
+            total += len(xs)
+
+    ax.set_xlim(-0.02, max(0.02, ax.get_xlim()[1]))
+    ax.axhline(0.05, color="#999", lw=0.8, ls="--")
+    xm = 0.5 * (ax.get_xlim()[1])
+    ax.axvline(xm, color="#999", lw=0.8, ls="--")
+    ax.text(0.98, 0.98, "look real +\ncould co-locate\n→ risky", transform=ax.transAxes,
+            ha="right", va="top", fontsize=8.5, color="#b0413a")
+    ax.text(0.98, 0.02, "look real +\ncan't co-locate\n→ strong non-pair", transform=ax.transAxes,
+            ha="right", va="bottom", fontsize=8.5, color="#b07d18")
+    ax.text(0.02, 0.5, "don't look real\n→ easy", transform=ax.transAxes,
+            ha="left", va="center", fontsize=8.5, color="#666")
+    ax.set_xlabel("looks like a real interaction   (network proximity) →")
+    ax.set_ylabel("biology says they can interact   (shared compartments) →")
+    ax.set_title("Two lenses: does it look real, and can biology allow it?")
+    ax.legend(loc="upper left", fontsize=8.5, framealpha=0.9)
+    if total < 20:
+        ax.text(0.5, 0.5, "needs compartment annotations\n(run scripts/build_huri_annotations.py"
+                "\nand view --dataset huri)", transform=ax.transAxes, ha="center",
+                va="center", fontsize=11, color="#999")
+    fig.tight_layout()
+    out_path = Path(out_path); fig.savefig(out_path, dpi=130); plt.close(fig)
+    return out_path
+
+
 def plot_confidence_hardness(records, out_path: str | Path) -> Path:
     """The regime map on negaverse's own axes (Lucy's framing): every emitted
     negative by confidence (x) and hardness (y). Eval negatives sit safe/low-
@@ -271,6 +345,7 @@ def render_all(graph: TypedInteractionGraph, records, out_dir: str | Path,
 
     written = [plot_separability(graph, edges, random_neg, hard, out_dir / "separability.png")]
     if records:
+        written.append(plot_quadrant(graph, records, out_dir / "quadrant.png", seed, n_ref))
         written.append(plot_manifold(graph, records, out_dir / "manifold.png", seed, n_ref))
         written.append(plot_confidence_hardness(records, out_dir / "confidence_hardness.png"))
         written.append(plot_flag_breakdown(records, out_dir / "flag_breakdown.png"))
