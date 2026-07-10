@@ -1,36 +1,40 @@
 # Structural / biological rules for protein–ligand interactions.
-# See rules/README.md for the field contract.
+# See rules/README.md for the field contract. Fields are sourced from PLINDER
+# (scripts/build_plinder_pli.py): ligand.volume = heavy-atom count, ligand.logp =
+# Crippen clogP, ligand.tpsa = topological polar surface area (all keyed by CCD);
+# protein.pocket_volume = median #pocket residues (keyed by UniProt).
 
 - id: ligand_pocket_size_mismatch
   modality: pli
   applies_to: [protein, ligand]
-  when: "ligand.volume > protein.pocket_volume * 1.5"
+  when: "ligand.volume > protein.pocket_volume * 6"
   effect: safer_negative
-  weight: 0.7
+  weight: 0.6
+  flag: ligand_too_big_for_pocket
   rationale: >
-    A ligand substantially larger than the target's binding pocket cannot be
-    accommodated, so a non-edge is a safe negative.
-  source: "TODO — pocket volume source (e.g. fpocket / PDB) to confirm"
+    A ligand whose heavy-atom count exceeds ~6x the pocket's residue count is
+    larger than 96% of real binders for a pocket that size (PLINDER calibration:
+    real-binder heavy-atoms/pocket-residues ratio has median 0.97, p95 4.7), so it
+    cannot be accommodated — a non-edge is a safe negative.
+  source: "PLINDER ligand_num_heavy_atoms vs system_num_pocket_residues; threshold ~p96 of real binders"
 
-- id: physicochemical_incompatibility
+- id: ligand_extreme_hydrophilicity
   modality: pli
   applies_to: [protein, ligand]
-  when: "ligand.logp > 5 and protein.pocket_polarity == 'polar'"
+  when: "ligand.logp < -6 and ligand.tpsa > 200"
   effect: safer_negative
-  weight: 0.4
+  weight: 0.2                         # deliberately low — weak, ligand-only prior
+  flag: ligand_very_polar
   rationale: >
-    A highly lipophilic ligand is a poor fit for a strongly polar pocket,
-    lowering the plausibility of binding.
-  source: "TODO — thresholds to confirm"
+    A very hydrophilic, high-polar-surface-area ligand (logP below ~p5 of real
+    binders AND large TPSA) is a poorer fit for the typically hydrophobic core of
+    a binding pocket — a mild safe-negative prior. NOTE this is ligand-only, not a
+    true pocket-hydrophobicity pairing: PLINDER's annotation table has no pocket
+    polarity/hydrophobicity column, so the proper physicochemical-complementarity
+    rule (ligand logP vs pocket polarity) can't yet be sourced — the pocket-fit
+    hardness filter carries the pair-level signal instead.
+  source: "PLINDER ligand_crippen_clogp + ligand_tpsa (ligand-only; pocket hydrophobicity unavailable)"
 
-- id: lineage_restricted_ligand_mismatch
-  modality: pli
-  applies_to: [protein, ligand]
-  when: "ligand.lineage_specificity == 'restricted_lineage' and disjoint(ligand.restricted_lineage_taxids, protein.lineage_taxids)"
-  effect: safer_negative
-  weight: 0.5                       # lineage-specific ligand w/o conserved partner: 0.4-0.6
-  rationale: >
-    A ligand restricted to a lineage whose taxids don't appear anywhere in
-    this protein's ancestor lineage lacks the corresponding ortholog or
-    conserved binding pocket, so a non-edge is a safer negative.
-  source: "TODO — NCBI taxid lineage source to confirm"
+# DROPPED: lineage_restricted_ligand_mismatch — PLINDER has no ligand lineage /
+# taxid annotations, so that rule has no data source. Re-add if a lineage source
+# is wired (the `when` grammar already supports it).

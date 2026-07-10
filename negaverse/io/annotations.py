@@ -25,6 +25,12 @@ ANNOT_DIR = "local-docs/annotations"
 # field name -> default TSV path (node<TAB>float). Extend as sources are added.
 _SCALAR_FIELDS = {
     "surface_hydrophobicity": f"{ANNOT_DIR}/hydrophobicity.tsv",
+    # PLI (PLINDER) — ligand fields keyed by CCD, pocket field keyed by UniProt.
+    # Disjoint key spaces from the PPI ones, so they coexist in one table.
+    "logp": f"{ANNOT_DIR}/plinder_ligand_logp.tsv",          # ligand.logp
+    "volume": f"{ANNOT_DIR}/plinder_ligand_volume.tsv",      # ligand.volume (heavy atoms)
+    "tpsa": f"{ANNOT_DIR}/plinder_ligand_tpsa.tsv",          # ligand polarity proxy
+    "pocket_volume": f"{ANNOT_DIR}/plinder_pocket_volume.tsv",  # protein.pocket_volume (#residues)
 }
 # set-valued fields (node<TAB>comma-separated terms), same shape as localization.
 _SET_FIELDS = {

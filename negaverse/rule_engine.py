@@ -70,8 +70,8 @@ def _validate(node: ast.AST) -> None:
         for v in node.values:
             _validate(v)
     elif isinstance(node, ast.UnaryOp):
-        if not isinstance(node.op, ast.Not):
-            raise RuleError("only `not` unary op is allowed")
+        if not isinstance(node.op, (ast.Not, ast.USub, ast.UAdd)):
+            raise RuleError("only `not` / unary +/- are allowed")
         _validate(node.operand)
     elif isinstance(node, ast.BinOp):
         if type(node.op) not in _BINOP:
@@ -107,7 +107,10 @@ def _eval(node: ast.AST, env: dict[str, dict]) -> Any:
         vals = (_eval(v, env) for v in node.values)
         return all(vals) if isinstance(node.op, ast.And) else any(vals)
     if isinstance(node, ast.UnaryOp):
-        return not _eval(node.operand, env)
+        val = _eval(node.operand, env)
+        if isinstance(node.op, ast.Not):
+            return not val
+        return -val if isinstance(node.op, ast.USub) else +val
     if isinstance(node, ast.BinOp):
         return _BINOP[type(node.op)](_eval(node.left, env), _eval(node.right, env))
     if isinstance(node, ast.Compare):
