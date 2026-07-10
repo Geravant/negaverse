@@ -25,3 +25,27 @@
     Pairs with no complementary hydrophobic surface are less likely to form a
     stable binding interface.
   source: "TODO — source/threshold to confirm"
+
+- id: no_shared_neighbors_low_expected_edge
+  modality: ppi
+  applies_to: [protein, protein]
+  when: "disjoint(a.neighbors, b.neighbors) and (a.degree * b.degree) / a.graph_two_m < 0.01"
+  effect: safer_negative
+  weight: 0.7                       # topology, no_overlap/easy_negative proxy: 0.7-0.9
+  rationale: >
+    Two proteins with no shared interactors and a configuration-model expected
+    edge count near zero are rarely adjacent in this network, so a non-edge
+    between them is a safer negative.
+  source: "TODO — threshold to confirm; mirrors negaverse/streams/topology.py::TopologyFilter"
+
+- id: evolutionary_coupling_absence
+  modality: ppi
+  applies_to: [protein, protein]
+  when: "a.evolutionary_coupling_score_with_b < 0.1"
+  effect: safer_negative
+  weight: 0.5                       # well-sampled orthologs: 0.5-0.7; conservative until MSA depth is checked
+  rationale: >
+    Proteins with no detectable co-evolution signal across well-sampled
+    orthologs are less likely to form a conserved physical complex, making a
+    non-edge a safer negative.
+  source: "TODO — EVcouplings threshold to confirm"

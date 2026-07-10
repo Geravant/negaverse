@@ -46,10 +46,26 @@ class _RuleFilterBase(Filter):
         rules = self._rules_arg if self._rules_arg is not None else load_rules(self._rules_dir)
         self._rules = [r for r in rules if r.effect in self._effects]
         if self._ann_arg is not None:
-            self._ann = self._ann_arg
+            base = self._ann_arg
         else:
             from ..io.annotations import build_annotation_table
-            self._ann = build_annotation_table()
+            base = build_annotation_table()
+        self._ann = self._augment_with_graph(base, graph)
+
+    @staticmethod
+    def _augment_with_graph(base: dict[str, dict], graph: TypedInteractionGraph) -> dict[str, dict]:
+        """Add graph-derived fields (neighbors / degree / graph_two_m) to every
+        node's record so topology rules can fire without a separate data file.
+        Existing (explicitly-provided) values win over the graph-derived ones."""
+        g = graph.g
+        two_m = 2 * g.number_of_edges()
+        merged = {n: dict(rec) for n, rec in base.items()}
+        for n in g.nodes():
+            rec = merged.setdefault(n, {})
+            rec.setdefault("neighbors", set(g.neighbors(n)))
+            rec.setdefault("degree", g.degree(n))
+            rec.setdefault("graph_two_m", two_m)
+        return merged
 
     def _applicable(self, graph: TypedInteractionGraph, u: str, v: str):
         """Yield (rule, rec_first, rec_second) for rules whose applies_to matches

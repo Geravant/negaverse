@@ -11,7 +11,7 @@ Two products from the same pool, never merged (Park & Marcotte 2011):
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -23,6 +23,7 @@ class Scored:
     confidence: float
     hardness: float          # topo percentile in [0,1]; higher = nearer positives
     sub_scores: dict
+    conf_evidence: dict = field(default_factory=dict)   # per-stream reported confidence
 
 
 def degree_matched_eval(

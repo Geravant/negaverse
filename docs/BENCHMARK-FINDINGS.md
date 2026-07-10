@@ -11,7 +11,45 @@ on the train graph only (no test edge leaks into a feature). 3 seeds, 8000 posit
 
 ---
 
-## F-2 (headline) — The advantage is feature/selection circularity, not a real gain
+## F-3 (headline) — An independent biology signal recovers most of the circularity deficit
+
+F-2 (below) showed topology-hard negatives *hurt* under independent (spectral)
+features. F-3 tests the fix the whole project points at: keep only the topology-hard
+negatives that an **independent** signal *also* calls safe. Concretely, the
+`negaverse_bio` strategy keeps the topology-hard pairs the co-localization rule flags
+`different_compartment` (the two proteins share no subcellular compartment → can't
+physically interact), dropping the topologically-hard-but-co-localized pairs that are
+the likeliest hidden positives. Compartments come from GO cellular-component, mapped
+into HuRI's Ensembl space (`scripts/build_huri_annotations.py`, ~95% coverage) — a
+signal **independent of graph topology**.
+
+Independent (spectral) features, gold Negatome test negatives, 3 seeds:
+
+| strategy | AUROC (seed 0 / 1 / 2) | vs random |
+|---|---|---|
+| random | 0.786 / 0.777 / 0.734 | — |
+| negaverse (topology-hard) | 0.672 / 0.668 / 0.659 | **−0.09 … −0.11** (the circularity hurt) |
+| **negaverse_bio** (topology-hard ∩ co-localization-safe) | **0.736 / 0.731 / 0.711** | still below random, but **+0.052 … +0.064 over plain negaverse** |
+
+Reproduce: `run_benchmark(..., feature_set="spectral", gold_test_neg=…, strategies=("random","negaverse","negaverse_bio"))`.
+
+**What it means.** Biology-vetting reliably lifts the hard negatives by **+0.05–0.06
+AUROC** under the most rigorous setting, recovering ~55% of the deficit that topology
+alone incurs — direct evidence that an *independent* (non-topology) signal makes the
+negatives genuinely cleaner, not just circularly better. It does **not** yet beat
+random: one coarse signal (compartments) isn't enough. The clear read is **stack more
+independent signals** (hydrophobicity — now computable via
+`scripts/compute_hydrophobicity.py`; ESM2 structure — shown to generalize on DRYAD;
+function/pathway) rather than lean on topology. This is the project's thesis, now with
+a measured gradient to climb.
+
+(Under `topological` features the ordering flips — `negaverse_bio` 0.838 < `negaverse`
+0.870 — exactly as expected: bio-vetting removes some of the topology-space advantage,
+which F-2 shows was circular anyway.)
+
+---
+
+## F-2 — The advantage is feature/selection circularity, not a real gain
 
 Two axes, four cells. Δ = negaverse − random, AUROC, range over 3 seeds:
 

@@ -26,7 +26,7 @@ negaverse's job is to replace "random non-edge" with a **matched, confidence-sco
 
 **P4 — Every negative is auditable.** Each emitted pair carries a confidence score **and** a provenance trail (which filters fired, which streams scored it, what evidence). Because biology gets revised, negatives must be re-scorable as knowledge and models improve — provenance makes that possible.
 
-**P5 — Universal core, typed plugins.** One graph engine; interaction-type specifics (features, filters, gold sources) live behind a plugin interface so PPI, protein–ligand, protein–RNA and protein–DNA share the pipeline and differ only where the biology differs.
+**P5 — Universal core, typed plugins.** One graph engine; interaction-type specifics (features, filters, gold sources) live behind a plugin interface so PPI, protein–ligand, protein–RNA and protein–DNA share the pipeline and differ only where the biology differs. Concretely, the orchestrator never names a specific filter or assumes a PPI statistic: the **hardness signal** comes from whichever GRADED filter declares `provides_hardness` (topology, for PPI); the **disagreement routing** compares the stream pairs in `PipelineConfig.disagree_pairs` (default the PPI graph views); and the **eval-matching confounder** is `PipelineConfig.match_weight_fn` (graph degree by default). A new modality supplies its own without touching `pipeline.py`.
 
 ## 3. Core abstraction
 

@@ -10,6 +10,10 @@ Two stories the demo needs to tell:
 ESM2/MolFormer UMAP panels are intentionally deferred (embeddings are a separate,
 heavier dependency; see docs/IMPLEMENTATION-PLAN.md).
 """
-from .plots import plot_separability, plot_funnel, render_all
+from .plots import (plot_separability, plot_funnel, plot_manifold, plot_quadrant,
+                    plot_confidence_hardness, plot_flag_breakdown, render_all)
+from .report import build_report
 
-__all__ = ["plot_separability", "plot_funnel", "render_all"]
+__all__ = ["plot_separability", "plot_funnel", "plot_manifold", "plot_quadrant",
+           "plot_confidence_hardness", "plot_flag_breakdown",
+           "render_all", "build_report"]
