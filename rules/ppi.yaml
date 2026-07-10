@@ -49,3 +49,16 @@
     orthologs are less likely to form a conserved physical complex, making a
     non-edge a safer negative.
   source: "TODO — EVcouplings threshold to confirm"
+
+- id: string_low_confidence_non_interaction
+  modality: ppi
+  applies_to: [protein, protein]
+  when: "a.string_score_with_b < 0.15"
+  effect: safer_negative
+  weight: 0.55                      # database-confidence-score guidance: 0.5-0.6
+  rationale: >
+    STRING's physical-subnetwork confidence score aggregates evidence across
+    experiments, curation, co-expression, and text-mining; a pair scoring
+    below STRING's own reporting threshold has no supporting evidence in any
+    channel, making a non-edge a safer negative.
+  source: "STRING v12.0 (physical subnetwork), https://string-db.org/, combined_score < 0.15 (STRING's own lowest reporting cutoff)"

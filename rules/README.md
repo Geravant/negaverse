@@ -55,7 +55,7 @@ pass one in, so those fields abstain until that wiring is added (see
 ## Status
 
 The generic loader + evaluator + `RuleGradedFilter`/`RuleVetoFilter` are **built**:
-every rule here becomes a filter automatically, no code. 7 rules exist across
+every rule here becomes a filter automatically, no code. 8 rules exist across
 `ppi.yaml`/`pli.yaml`; `colocalization_mismatch` is live wherever GO
 cellular-component annotations are populated. The rest are valid templates that
 currently abstain — most because their annotation field is genuinely unsourced
