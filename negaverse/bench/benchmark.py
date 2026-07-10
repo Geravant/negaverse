@@ -151,20 +151,37 @@ def _negaverse_bio_negatives(graph, train_pos, node_type, n, seed, max_pool):
     return bio[:n]
 
 
+# ESM2 sequence embeddings for HuRI, if built (scripts/build_esm2_embeddings.py).
+# OFF by default: measured to HURT selection on HuRI — the ESM2-t6 mean-pooled
+# manifold surprisal is ~uninformative here (edge-vs-nonedge AUROC ~0.51), so it
+# injects noise into the confidence ranking (Δ AUROC ~-0.03 vs the stack without
+# it; entropy fusion only partly mitigates). ESM2's DRYAD strength (0.885) was
+# *supervised* — it belongs as a downstream feature, not an unsupervised selector.
+# Pass esm2_path=_ESM2_HURI to opt back in / experiment.
+_ESM2_HURI = "local-docs/huri/esm2_huri.npz"
+
+
 def _negaverse_stacked_negatives(graph, train_pos, node_type, n, seed, max_pool,
-                                 filters=("known_positive_veto", "structured", "topology", "rules")):
+                                 base_filters=("known_positive_veto", "structured", "topology", "rules"),
+                                 esm2_path=None):
     """Topology-hard negatives ranked by the FUSED independent-biology confidence
-    (co-localization + hydrophobicity + function + structured + any wired manifold),
-    keeping the pairs the combined signals most agree are true negatives. This
-    generalizes negaverse_bio from a single co-localization flag to the fusion of
-    every available independent signal — so it measures the stack, not one filter.
-    Over-samples the hard tail, then keeps the n highest-confidence pairs."""
+    (co-localization + hydrophobicity + function + structured, plus the ESM2
+    sequence manifold if `esm2_path` is given), keeping the pairs the combined
+    signals most agree are true negatives. Generalizes negaverse_bio from a single
+    co-localization flag to the fusion of every independent signal — so it measures
+    the stack, not one filter. Over-samples the hard tail, keeps the n
+    highest-confidence pairs."""
+    from pathlib import Path
+    from ..streams import build_filters, SequenceManifoldFilter
     tg = TypedInteractionGraph.from_edges(
         train_pos, dict(node_type), admissible_types=[("protein", "protein")],
         name="bench-train")
+    filters = build_filters("ppi", list(base_filters))
+    if esm2_path and Path(esm2_path).exists():           # opt-in ESM2 sequence lens
+        filters.append(SequenceManifoldFilter(path=esm2_path, seed=seed))
     cfg = PipelineConfig(modality="ppi", n_eval=0, n_train=max(4 * n, n), max_pool=max_pool,
-                         seed=seed, filters=list(filters))
-    res = run_pipeline(tg, cfg)
+                         seed=seed)
+    res = run_pipeline(tg, cfg, filters=filters)
     hard = [r for r in res.records if r.mode == "train"]
     hard.sort(key=lambda r: r.confidence, reverse=True)   # biology most-confident safe negatives
     return [(r.u, r.v) for r in hard[:n]]

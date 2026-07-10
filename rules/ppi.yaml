@@ -38,14 +38,18 @@
   applies_to: [protein, protein]
   when: "disjoint(a.processes, b.processes)"
   effect: safer_negative
-  weight: 0.5                         # calibrated on HuRI (see build_go_process.py)
+  weight: 0.3                         # low — weak signal (see below)
   flag: different_process
   rationale: >
     Two proteins annotated to entirely non-overlapping GO biological processes
-    are less likely to be functional interaction partners, so a non-edge between
-    them is a safer negative. Independent of both graph topology and subcellular
-    localization (GO biological_process, not cellular_component).
-  source: "GO biological_process (scripts/build_go_process.py)"
+    are somewhat less likely to be functional interaction partners. Independent
+    of both graph topology and subcellular localization (GO biological_process,
+    not cellular_component). NOTE weak with EXACT-term matching: on HuRI 95% of
+    non-edges but also 88% of real edges are disjoint (interactors often share a
+    parent process, not the exact leaf term), so this only ~1.08x enriches and
+    separates at AUROC ~0.54. A GO-hierarchy semantic similarity would be
+    stronger — hence low weight until that's built.
+  source: "GO biological_process, GOA human GAF (scripts/build_go_process.py)"
 
 - id: no_shared_neighbors_low_expected_edge
   modality: ppi

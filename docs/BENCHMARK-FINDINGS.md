@@ -54,8 +54,9 @@ which F-2 shows was circular anyway.)
 F-3 climbed the gradient with one signal. F-4 stacks several. The `negaverse_stacked`
 strategy ranks the topology-hard tail by the pipeline's **fused confidence** across
 every independent signal at once — co-localization + surface-hydrophobicity mismatch +
-structured plausibility (+ GO biological-process and ESM2 sequence manifold once wired)
-— and keeps the pairs the combination most agrees are true negatives, instead of
+GO biological-process + structured plausibility (the ESM2 sequence manifold was wired and
+measured, but excluded — see below) — and keeps the pairs the combination most agrees are
+true negatives, instead of
 `negaverse_bio`'s single co-localization flag. The **external known-positive veto**
 (BioGRID + IntAct, ~311k documented human interactions mapped into HuRI) is also active,
 so documented positives can't leak into the negatives.
@@ -75,19 +76,38 @@ Reproduce: `python -m negaverse.bench --gold-test-neg --features spectral --stra
 `negaverse_stacked` sits at **AUROC parity** with random (mean Δ ≈ +0.001 across seeds)
 and **beats random on AUPRC in all three seeds** (+0.002 … +0.004) — the first setting
 where our hard negatives are, on the fairest metric, no worse than (and slightly better
-than) random. And this is with **only two independent signals live** (co-localization +
-a deliberately-weak hydrophobicity proxy): GO biological-process and the ESM2 sequence
-manifold — the two expected to carry the most independent information — are built but
-were blocked on a UniProt REST outage at measurement time. The gradient from F-2 → F-3
-→ F-4 (−0.10 → −0.06 → ~0.00) is the project's thesis playing out: **independent biology
-signals, stacked, make the hard negatives genuinely clean.**
+than) random. The gradient F-2 → F-3 → F-4 (−0.10 → −0.06 → ~0.00) is the project's
+thesis playing out: **independent biology signals, stacked, make the hard negatives
+genuinely clean.**
 
-Caveat on attribution: whole-protein hydrophobicity separates HuRI edges from non-edges
-at only AUROC ~0.55 (see `rules/ppi.yaml::hydrophobicity_mismatch`), so most of the lift
-is co-localization + the fused-confidence selection, not hydrophobicity. The honest read
-is that the *method* (fuse independent signals, keep what they agree on) works; adding
-genuinely strong independent signals (function, ESM2) is what should push it clearly
-past random.
+The stack that achieves this is **co-localization + hydrophobicity-mismatch + GO
+biological-process** (all three live), fused by confidence. Honest per-signal read
+(edge-vs-nonedge AUROC on HuRI, measured):
+
+| signal | own AUROC | contribution to the stack |
+|---|---|---|
+| co-localization (GO CC, `disjoint`) | ~0.60 | the workhorse — most of the lift |
+| hydrophobicity mismatch (KD mean) | ~0.55 | weak proxy; small |
+| GO biological-process (`disjoint`) | ~0.54 | weak (exact-term; ~neutral) |
+| **ESM2-t6 sequence manifold** | **~0.51** | **excluded — it HURTS** (see below) |
+
+**The ESM2 negative result (important, and honest).** We built ESM2-t6 embeddings for
+all 8,161 HuRI proteins and wired the `sequence_manifold` filter, expecting it to be the
+strong lens (it gave 0.885 *supervised, protein-disjoint* on DRYAD). On HuRI the
+unsupervised **manifold-surprisal** value is ~flat (edge-vs-nonedge AUROC **0.509**), so
+adding it to the fusion **injects noise into the confidence ranking and degrades
+selection** (Δ AUROC ~**−0.03** vs the stack without it; entropy-weighted fusion only
+partly mitigates). Lesson: ESM2's power is as a **supervised downstream feature**, not an
+unsupervised selection filter — and a coarse mean-pooled t6 embedding is too weak for the
+manifold view regardless. It is therefore **off by default** in `negaverse_stacked`
+(opt back in via `esm2_path`); this is a measured exclusion, not an oversight.
+
+Caveat on attribution: hydrophobicity and function are both weak (~0.54–0.55), so most of
+the lift is co-localization + the fused-confidence selection method. The honest read: the
+*method* (fuse independent signals, keep what they agree on) reaches parity; clearing
+random decisively needs a genuinely strong *independent* signal — a **GO-hierarchy
+semantic** functional similarity (not exact-term), or ESM2 used **supervised** as a
+feature, are the two most promising next levers.
 
 ---
 

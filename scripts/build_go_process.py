@@ -1,67 +1,58 @@
 """Produce GO biological-process annotations so a functional-compatibility rule
 can fire — an independent (non-topology, non-localization) biology signal.
 
-Mirrors scripts/build_huri_annotations.py but pulls GO **biological_process**
-(the `P:` terms) instead of cellular-component. Scans the human reviewed
-proteome once and writes:
-  * ENSG   -> processes   (for the HuRI benchmark graph, restricted to its nodes)
+Parses the GO Consortium's human GAF (goa_human.gaf.gz) — a stable bulk file,
+independent of the flaky UniProt REST API — and writes:
+  * ENSG   -> processes   (for the HuRI benchmark graph)
   * UniProt-> processes   (for the SARS-CoV-2 host graph)
 into local-docs/annotations/go_bp.tsv, keyed by node id (ENSG and UniProt keys
 never collide), so build_annotation_table() picks it up as the `processes` field.
 
+ENSG mapping reuses the cached UniProt->ENSG map from
+scripts/build_known_positive_sources.py (local-docs/mappings/uniprot_ensg_human.tsv).
+
+    # get the GAF once (11 MB):
+    curl -sL -o local-docs/go/goa_human.gaf.gz \
+      https://ftp.ebi.ac.uk/pub/databases/GO/goa/HUMAN/goa_human.gaf.gz
     PYTHONPATH=. python scripts/build_go_process.py
 
-Network required (UniProt REST, paginated ~40 pages); merges, doesn't clobber.
+GAF 2.x columns (tab-separated): col2 = UniProt accession, col5 = GO id,
+col9 = aspect (P/F/C). We keep aspect == 'P' (biological_process).
 """
 from __future__ import annotations
 
-import json
-import re
-import ssl
-import time
-import urllib.parse
-import urllib.request
+import gzip
 from pathlib import Path
 
-try:
-    import certifi
-    _SSL = ssl.create_default_context(cafile=certifi.where())
-except Exception:
-    _SSL = ssl._create_unverified_context()
-
+GAF = Path("local-docs/go/goa_human.gaf.gz")
+MAP = Path("local-docs/mappings/uniprot_ensg_human.tsv")
 OUT = Path("local-docs/annotations/go_bp.tsv")
-SEARCH = "https://rest.uniprot.org/uniprotkb/search"
 
 
-def _get(url):
-    req = urllib.request.Request(url, headers={"Accept": "application/json"})
-    with urllib.request.urlopen(req, timeout=60, context=_SSL) as fh:
-        link = fh.headers.get("Link", "")
-        data = json.load(fh)
-    m = re.search(r'<([^>]+)>;\s*rel="next"', link)
-    return data, (m.group(1) if m else None)
+def _load_uni2ensg() -> dict[str, set[str]]:
+    m: dict[str, set[str]] = {}
+    if not MAP.exists():
+        print(f"  (no {MAP}; ENSG rows skipped — run build_known_positive_sources.py)")
+        return m
+    for line in MAP.read_text().splitlines():
+        if line and not line.startswith("#"):
+            u, e = line.split("\t")[:2]
+            m.setdefault(u, set()).update(e.split(","))
+    return m
 
 
-def _iter_proteome():
-    url = SEARCH + "?" + urllib.parse.urlencode({
-        "query": "organism_id:9606 AND reviewed:true",
-        "fields": "accession,xref_ensembl,go_p", "format": "json", "size": "500"})
-    page = 0
-    while url:
-        for attempt in range(4):
-            try:
-                data, url = _get(url)
-                break
-            except Exception as e:
-                print(f"  page {page}: retry {attempt+1} ({e})")
-                time.sleep(2 * (attempt + 1))
-        else:
-            break
-        for e in data.get("results", []):
-            yield e
-        page += 1
-        if page % 10 == 0:
-            print(f"  proteome page {page} ...")
+def _iter_gaf(path: Path):
+    with gzip.open(path, "rt", encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            if line.startswith("!"):
+                continue
+            c = line.rstrip("\n").split("\t")
+            if len(c) < 9 or c[8] != "P":          # aspect P = biological_process
+                continue
+            acc = c[1].split("-")[0]               # strip isoform suffix
+            go = c[4]                              # GO:0008150
+            if acc and go:
+                yield acc, go
 
 
 def _merge(path: Path, new: dict[str, set]):
@@ -74,42 +65,35 @@ def _merge(path: Path, new: dict[str, set]):
                 cur[k] = set(v.split(","))
     for k, v in new.items():
         cur.setdefault(k, set()).update(v)
-    path.write_text("# node<TAB>comma-separated GO biological_process terms\n"
+    path.write_text("# node<TAB>comma-separated GO biological_process ids\n"
                     + "".join(f"{k}\t{','.join(sorted(cur[k]))}\n" for k in sorted(cur)))
     return len(new), len(cur)
 
 
 def main():
+    if not GAF.exists():
+        raise SystemExit(f"missing {GAF}; download it first (see this file's docstring)")
     from negaverse.io import load_huri_graph
     huri = set(load_huri_graph().g.nodes())
-    print(f"HuRI ENSG nodes: {len(huri):,}")
+    uni2ensg = _load_uni2ensg()
+    print(f"HuRI ENSG nodes: {len(huri):,}; UniProt->ENSG map: {len(uni2ensg):,} accessions")
+
+    uni_proc: dict[str, set] = {}
+    for acc, go in _iter_gaf(GAF):
+        uni_proc.setdefault(acc, set()).add(go)
+    print(f"  parsed GAF: {len(uni_proc):,} human accessions with a biological_process term")
 
     out: dict[str, set] = {}
     n_ensg = 0
-    print("Scanning human reviewed proteome (UniProt) for GO biological_process ...")
-    for e in _iter_proteome():
-        acc = e.get("primaryAccession")
-        ensgs, procs = set(), set()
-        for x in e.get("uniProtKBCrossReferences", []):
-            db = x.get("database")
-            if db == "Ensembl":
-                for p in x.get("properties", []):
-                    if p.get("key") == "GeneId" and p.get("value"):
-                        ensgs.add(p["value"].split(".")[0])
-            elif db == "GO":
-                for p in x.get("properties", []):
-                    if p.get("key") == "GoTerm" and p.get("value", "").startswith("P:"):
-                        procs.add(p["value"][2:].strip().lower())
-        if not procs:
-            continue
-        if acc:                                    # UniProt key -> SARS host graph
-            out.setdefault(acc, set()).update(procs)
-        for g in ensgs & huri:                     # ENSG key -> HuRI benchmark
-            out.setdefault(g, set()).update(procs)
-            n_ensg += 1
+    for acc, procs in uni_proc.items():
+        out.setdefault(acc, set()).update(procs)             # UniProt key -> SARS host graph
+        for g in uni2ensg.get(acc, ()):                      # ENSG key -> HuRI benchmark
+            if g in huri:
+                out.setdefault(g, set()).update(procs)
+                n_ensg += 1
 
     n, tot = _merge(OUT, out)
-    print(f"\nmerged {n} rows into {OUT} (total {tot}); {n_ensg} HuRI-gene rows")
+    print(f"\nmerged {n} rows into {OUT} (total {tot}); {n_ensg} HuRI-gene rows written")
 
 
 if __name__ == "__main__":
