@@ -275,17 +275,20 @@ or `local-docs/mappings` are absent (see the README for how to fetch them).
 
 ## Recommended order to productionize
 
-1. **Stream-reported confidence, then entropy fusion.** Have topology and
-   literature populate `evidence["confidence"]`; then flip `fusion_mode=
-   "entropy"`. (A: 0.81 → 0.94 with reported confidence; the scalar proxy alone
-   is not safe.)
-2. **Manifold surprisal as GRADED streams — sequence first.** Two axes:
-   (a) **ESM2 sequence manifold** (`concat`/`avg` operator) — the *independent*
-   one (corr ~0.2 with the graph), the biggest fusion lift, and the natural fit
-   for sequence-rich PLI (ESM2 + MolFormer). (b) **spectral graph manifold**
-   (Hadamard) — complementary to topology but partly redundant (corr 0.64). Fuse
-   all three (topology + spectral + ESM2): DRYAD 0.81 → 0.88. Skip the
-   gold-negative and raw-topological-feature variants.
+1. **Stream-reported confidence, then entropy fusion — DONE.** `TopologyFilter`
+   (structural support) and `LiteratureFilter` (vote unanimity) now populate
+   `evidence["confidence"]`; the manifold filters report their peakedness too.
+   `_fuse_confidence` prefers reported confidence over the scalar proxy (which
+   alone backfires), so `PipelineConfig(fusion_mode="entropy")` is safe to enable.
+   (A: 0.81 → 0.94 with reported confidence.) See `tests/test_reported_confidence.py`.
+2. **Manifold surprisal as GRADED streams — DONE.** Both shipped as opt-in
+   filters over one shared base (`streams/manifold.py`): (a) **SequenceManifoldFilter**
+   — ESM2 (or any per-protein) embeddings, `concat` operator, the *independent*
+   axis (corr ~0.2), buildable from a `.npz` (`scripts/build_esm2_embeddings.py`,
+   `io.load_embeddings_npz`) and abstaining for unembedded nodes; the natural fit
+   for sequence-rich PLI. (b) **ManifoldSurprisalFilter** — spectral graph, `Hadamard`,
+   complementary to topology (corr 0.64). Verified end-to-end on DRYAD with all
+   three axes fused. Skip the gold-negative and raw-topological-feature variants.
 3. **DPP for the train set.** Swap `hard_train`'s top-k for `greedy_map_dpp` over
    pair-embeddings; keep top-k for eval until the quality/diversity trade is
    tuned. (B: removes the 0.998-cosine duplicates.)

@@ -132,6 +132,8 @@ class TopologyFilter(Filter):
                 evidence={"cn": 0, "l3": 0.0, "ra": 0.0,
                           "expected_config": round(expected, 4),
                           "risk": round(1.0 - _FLOOR_VALUE, 4),
+                          # definitive absence of a local path => confident call
+                          "confidence": 0.9,
                           "bucket": "no_overlap"},
             )
 
@@ -143,5 +145,8 @@ class TopologyFilter(Filter):
             evidence={"cn": cn, "l3": round(l3, 4), "ra": round(ra, 4),
                       "l3_norm": round(l3n, 4), "ra_norm": round(ran, 4),
                       "expected_config": round(expected, 4),
-                      "risk": round(risk, 4)},
+                      "risk": round(risk, 4),
+                      # reported confidence = how much structural signal backs the
+                      # call (little overlap => shaky; strong L3/RA => decisive)
+                      "confidence": round(min(1.0, l3n + ran), 4)},
         )

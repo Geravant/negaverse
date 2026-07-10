@@ -60,17 +60,25 @@ class PipelineResult:
 
 def _fuse_confidence(sub_scores: dict[str, float | None],
                      weights: dict[str, float] | None,
-                     mode: str = "mean", lam: float = 1.0) -> float:
+                     mode: str = "mean", lam: float = 1.0,
+                     reported: dict[str, float | None] | None = None) -> float:
     w = weights or {}
+    rep = reported or {}
     num = den = 0.0
     for name, val in sub_scores.items():
         if val is None:
             continue
         base = w.get(name, 1.0)
-        # entropy mode: scale by decisiveness = 1 − binary-entropy of the score
-        # (a stream sitting at 0.5 is a guesser; near 0/1 it commits). Falls back
-        # to the plain mean at lam=0. See ig/entropy_fusion.py.
-        wt = base * (1.0 + lam * (1.0 - binary_entropy(val))) if mode == "entropy" else base
+        # entropy mode: weight by decisiveness. Prefer a stream's *reported*
+        # confidence (evidence["confidence"] — real peakedness, e.g. topology's
+        # structural support or the LLM's vote agreement); fall back to the
+        # scalar 1−H(value) proxy, which alone can backfire (IG-FEATURES §1).
+        if mode == "entropy":
+            rc = rep.get(name)
+            dec = rc if rc is not None else (1.0 - binary_entropy(val))
+            wt = base * (1.0 + lam * dec)
+        else:
+            wt = base
         num += wt * val
         den += wt
     return round(num / den, 4) if den > 0 else 0.5
@@ -105,7 +113,7 @@ def run_pipeline(
     # --- GRADED pass (parallel): score with each graded filter, merge ---
     kept: list[Scored] = []
     topo_raw: list[float] = []
-    staged: list[tuple[str, str, dict, float]] = []
+    staged: list[tuple[str, str, dict, float, dict]] = []
     graded_flags: dict[tuple[str, str], list[str]] = {}
     for (u, v) in survivors:
         scores = [f.score(graph, u, v) for f in graded_f]
@@ -119,13 +127,16 @@ def run_pipeline(
         fl = [f for sc in scores for f in sc.flags]
         if fl:
             graded_flags[(u, v)] = fl
+        # each stream's *reported* confidence (evidence["confidence"]) — real
+        # peakedness that entropy fusion should weight by, kept for the GATED re-fuse.
+        reported = {s.stream: (s.evidence or {}).get("confidence") for s in scores}
         # hardness driver = the topology filter's link-likelihood ("risk"); the
         # higher it is, the more the pair resembles a real edge (harder negative).
         topo_s = next((s for s in scores if s.stream in ("topology", "embedding")), None)
         ev = (topo_s.evidence or {}) if topo_s else {}
         topo = ev.get("risk", ev.get("topo", 0.0))
         topo_raw.append(topo)
-        staged.append((u, v, dict(fused.sub_scores), topo))
+        staged.append((u, v, dict(fused.sub_scores), topo, reported))
 
     # hardness = topo percentile across the surviving pool ("fraction strictly below")
     if topo_raw:
@@ -134,10 +145,10 @@ def run_pipeline(
         pct = np.searchsorted(srt, arr, side="left") / max(len(arr) - 1, 1)
     else:
         pct = np.zeros(0)
-    for i, (u, v, sub, topo) in enumerate(staged):
+    for i, (u, v, sub, topo, reported) in enumerate(staged):
         sub = {**{n: None for n in score_names}, **sub}  # ensure all names present
-        conf = _fuse_confidence(sub, cfg.weights, cfg.fusion_mode, cfg.fusion_lam)
-        kept.append(Scored(u=u, v=v, confidence=conf,
+        conf = _fuse_confidence(sub, cfg.weights, cfg.fusion_mode, cfg.fusion_lam, reported)
+        kept.append(Scored(u=u, v=v, confidence=conf, conf_evidence=reported,
                            hardness=round(float(pct[i]), 4), sub_scores=sub))
 
     # Layer 5 — two products from the same pool. Degree-match the eval set on the
@@ -184,13 +195,15 @@ def run_pipeline(
                     gated_flags.setdefault((s.u, s.v), []).extend(sc.flags)
                 if sc.value is not None:
                     s.sub_scores[f.name] = sc.value
+                    s.conf_evidence[f.name] = ev.get("confidence")
                     merged = True
                 reviewed = True
             if reviewed:
                 gated_reviewed += 1
             if merged:
                 s.confidence = _fuse_confidence(s.sub_scores, cfg.weights,
-                                                cfg.fusion_mode, cfg.fusion_lam)
+                                                cfg.fusion_mode, cfg.fusion_lam,
+                                                s.conf_evidence)
 
     records: list[NegativeRecord] = []
     records += [_record(graph, s, "eval", cfg, score_names, gated_flags, gated_evidence, graded_flags)
