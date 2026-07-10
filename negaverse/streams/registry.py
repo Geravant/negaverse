@@ -26,7 +26,8 @@ def build_filters(modality: str = "ppi", names: list[str] | None = None) -> list
     """Instantiate the active filters for a modality (registration order).
     `names` overrides the default selection for that modality."""
     if names is None:
-        names = [n for n, c in _REGISTRY.items() if modality in c.modalities]
+        names = [n for n, c in _REGISTRY.items()
+                 if modality in c.modalities and c.default]
     missing = [n for n in names if n not in _REGISTRY]
     if missing:
         raise KeyError(f"unknown filter(s): {missing}; registered: {list(_REGISTRY)}")

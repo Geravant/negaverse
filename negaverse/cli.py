@@ -67,6 +67,107 @@ def _collect_literature(records, out) -> dict:
             "verdicts": dict(verdicts), "file": str(out / "literature_cards.json")}
 
 
+def _flags_of(rec: dict) -> list[str]:
+    fl = rec.get("flags")
+    return fl.split(";") if isinstance(fl, str) else list(fl or [])
+
+
+def _judge_remaining(args, out: Path) -> None:
+    """Incremental pass: load a prior --out run and send its still-unjudged risky
+    pairs (flagged suspected_false_negative, no LLM verdict yet) to the judge,
+    up to --literature-k more. Re-fuses their confidence, updates the cards,
+    negatives files, stats coverage, and (best-effort) the dashboard — so you can
+    keep judging the tail across several invocations."""
+    from .pipeline import PipelineConfig, _fuse_confidence
+    from .streams import build_filters, LiteratureFilter
+
+    jsonl = out / "negatives.jsonl"
+    if not jsonl.exists():
+        raise SystemExit(f"--judge-remaining: no prior run at {jsonl} (run without it first)")
+    recs = [json.loads(l) for l in jsonl.read_text().splitlines() if l.strip()]
+
+    cards_path = out / "literature_cards.json"
+    cards = json.loads(cards_path.read_text()) if cards_path.exists() else []
+    judged = {frozenset((c["u"], c["v"])) for c in cards}
+
+    remaining = [r for r in recs if "suspected_false_negative" in _flags_of(r)
+                 and frozenset((r["u"], r["v"])) not in judged]
+    if not remaining:
+        print("--judge-remaining: every risky pair already has a verdict — nothing to do.")
+        return
+    todo = remaining[:args.literature_k]
+    print(f"--judge-remaining: {len(remaining)} unjudged risky pairs; "
+          f"judging {len(todo)} (--literature-k {args.literature_k}) ...")
+
+    graph = load_sars_cov2_graph(include_host_host=not args.no_host_host)
+    cfg = PipelineConfig(match_on_type="viral")
+    graded = build_filters(cfg.modality, ["structured", "topology"])
+    lit = LiteratureFilter(enabled=True, provider=args.provider, model=args.model, votes=args.votes)
+    for f in graded + [lit]:
+        f.fit(graph)
+
+    by_pair = {frozenset((r["u"], r["v"])): r for r in recs}
+    new_cards = []
+    for r in todo:
+        u, v = r["u"], r["v"]
+        sub, rep = {}, {}
+        for f in graded:
+            sc = f.score(graph, u, v)
+            if sc.value is not None:
+                sub[f.name] = sc.value
+                rep[f.name] = (sc.evidence or {}).get("confidence")
+        ls = lit.score(graph, u, v)
+        ev = ls.evidence or {}
+        if ev.get("gated_status") != "reviewed":
+            print(f"  {u} x {v}: judge abstained ({ev.get('reason', ev.get('verdict'))})")
+            continue
+        if ls.value is not None:
+            sub[lit.name] = ls.value
+            rep[lit.name] = ev.get("confidence")
+        conf = _fuse_confidence(sub, cfg.weights, cfg.fusion_mode, cfg.fusion_lam, rep)
+        rr = by_pair[frozenset((u, v))]
+        rr["stream_literature"] = ls.value
+        rr["confidence"] = conf
+        fl = _flags_of(rr)
+        tag = "llm_" + ev["verdict"]
+        if tag not in fl:
+            fl.append(tag)
+        rr["flags"] = ";".join(fl)
+        new_cards.append({"u": u, "v": v, "verdict": ev["verdict"],
+                          "confidence": ev["verdict_confidence"], "votes": ev.get("votes"),
+                          "agreement": ev.get("agreement"), "vote_counts": ev.get("vote_counts"),
+                          "rationale": ev["rationale"], "evidence": ev["evidence"],
+                          "model": ev["model"]})
+        print(f"  {u} x {v} -> {ev['verdict']} (conf {ev['verdict_confidence']})")
+
+    cards_path.write_text(json.dumps(cards + new_cards, indent=2))
+    df = pd.DataFrame(recs)
+    df[[c for c in df.columns if c != "provenance"]].to_csv(out / "negatives.csv", index=False)
+    with open(jsonl, "w") as fh:
+        for r in recs:
+            fh.write(json.dumps(r) + "\n")
+
+    stats_path = out / "stats.json"
+    if stats_path.exists():
+        summary = json.loads(stats_path.read_text())
+        rc = summary.get("stats", {}).get("risky_coverage")
+        if rc:
+            rc["judged"] = rc.get("judged", 0) + len(new_cards)
+            rc["unjudged"] = max(0, rc.get("risky", 0) - rc["judged"])
+        stats_path.write_text(json.dumps(summary, indent=2))
+
+    print(f"\njudged {len(new_cards)} more; literature_cards.json now holds "
+          f"{len(cards) + len(new_cards)} verdicts. "
+          f"{len(remaining) - len(todo)} risky pairs still unjudged.")
+    if not args.no_report:
+        try:
+            from .viz import build_report
+            build_report(out, title="negaverse", subtitle=f"{graph.name} run (judge-remaining)")
+            print("refreshed dashboard: " + str(out / "report.html"))
+        except Exception as e:
+            print(f"(skipped dashboard refresh: {e})")
+
+
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(prog="negaverse")
     ap.add_argument("--n-eval", type=int, default=300)
@@ -82,8 +183,16 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--provider", choices=["auto", "anthropic", "openrouter"], default="auto",
                     help="LLM backend; 'auto' picks whichever key is present")
     ap.add_argument("--model", type=str, default=None, help="override the LLM model id")
-    ap.add_argument("--literature-k", type=int, default=8,
-                    help="how many contested pairs to send to the LLM")
+    ap.add_argument("--literature-k", type=int, default=40,
+                    help="max contested/risky pairs to send to the LLM per run "
+                         "(the risky tail beyond this stays unjudged; see "
+                         "risky_coverage in stats and --judge-remaining)")
+    ap.add_argument("--judge-remaining", action="store_true",
+                    help="don't run the full pipeline — load a prior --out run and "
+                         "send its still-unjudged risky pairs (suspected_false_negative "
+                         "without an LLM verdict) to the judge, up to --literature-k more")
+    ap.add_argument("--no-report", action="store_true",
+                    help="skip writing the out/report.html dashboard")
     ap.add_argument("--votes", type=int, default=5,
                     help="best-of-N majority vote per pair (1 = single call)")
     args = ap.parse_args(argv)
@@ -92,6 +201,10 @@ def main(argv: list[str] | None = None) -> None:
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
+
+    if args.judge_remaining:
+        _judge_remaining(args, out)
+        return
 
     print("Loading SARS-CoV-2 interactome ...")
     graph = load_sars_cov2_graph(include_host_host=not args.no_host_host)
@@ -143,6 +256,17 @@ def main(argv: list[str] | None = None) -> None:
     with open(out / "stats.json", "w") as fh:
         json.dump(summary, fh, indent=2)
 
+    # ---- dashboard (best-effort; needs the viz extra) ----
+    if not args.no_report:
+        try:
+            from .viz import render_all, build_report
+            render_all(graph, result.records, out, stats=result.stats, seed=args.seed)
+            report = build_report(out, title="negaverse",
+                                  subtitle=f"{graph.name} run")
+            print(f"\nwrote dashboard: {report}  (open in a browser)")
+        except Exception as e:                       # matplotlib/sklearn absent, etc.
+            print(f"\n(skipped dashboard: {e}; install with `pip install -e \".[viz]\"`)")
+
     # ---- report ----
     print("\n=== pipeline stats ===")
     print(json.dumps(result.stats, indent=2))
@@ -157,6 +281,11 @@ def main(argv: list[str] | None = None) -> None:
     print(df[show].sort_values("confidence", ascending=False).head(6).to_string(index=False))
     fn = df[df["flags"].str.contains("suspected_false_negative", na=False)]
     print(f"\nsuspected false negatives flagged: {len(fn)}")
+    rc = result.stats.get("risky_coverage", {})
+    if rc.get("unjudged"):
+        print(f"  LLM-judged {rc['judged']} of {rc['risky']} risky pairs — "
+              f"{rc['unjudged']} unjudged (raise --literature-k, now {rc.get('gated_cap')}, "
+              f"or run: python -m negaverse.cli --judge-remaining --out {out})")
     if len(fn):
         print(fn[show].head(5).to_string(index=False))
 

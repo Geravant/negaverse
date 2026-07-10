@@ -13,6 +13,23 @@ from ..graph import TypedInteractionGraph
 
 _C = {"positive": "#2a9d8f", "random": "#adb5bd", "hard": "#e76f51"}
 
+# plain-language names for a non-specialist audience
+_NAME = {"positive": "real interactions", "random": "random non-pairs",
+         "hard": "our chosen non-pairs"}
+# provenance flags -> plain phrases
+_FLAG = {
+    "different_compartment": "different part of the cell (can't meet)",
+    "near_boundary": "sits close to real interactions",
+    "suspected_false_negative": "risky — might really interact",
+    "easy_negative": "clearly unrelated (easy)",
+    "no_shared_neighbors_low_expected_edge": "no shared partners in the network",
+    "topology_manifold_disagreement": "the two graph views disagree → sent to review",
+}
+
+
+def _flag_label(f: str) -> str:
+    return _FLAG.get(f, f.replace("_", " "))
+
 
 # --- structural measures ------------------------------------------------
 def _common_neighbors(g: nx.Graph, pairs) -> np.ndarray:
@@ -52,10 +69,10 @@ def plot_separability(graph: TypedInteractionGraph, positives, random_neg, hard_
         cn = np.clip(_common_neighbors(g, pairs), 0, clip)
         bins = np.arange(0, clip + 2) - 0.5
         ax1.hist(cn, bins=bins, density=True, histtype="step", linewidth=2,
-                 color=_C[name], label=f"{name} (n={len(pairs)})")
-    ax1.set_xlabel(f"common neighbours (clipped at {clip})")
-    ax1.set_ylabel("density")
-    ax1.set_title("Common-neighbour overlap")
+                 color=_C[name], label=f"{_NAME[name]} (n={len(pairs)})")
+    ax1.set_xlabel("number of shared partner proteins")
+    ax1.set_ylabel("share of pairs")
+    ax1.set_title("How many partners the two proteins share")
     ax1.legend()
 
     # panel 2: shortest-path length distribution (proportions)
@@ -67,15 +84,15 @@ def plot_separability(graph: TypedInteractionGraph, positives, random_neg, hard_
         sp = _shortest_paths(g, pairs)
         counts = np.array([(sp == d).mean() for d in range(1, 8)])
         ax2.bar(np.arange(7) + offsets[name], counts, width=width,
-                color=_C[name], label=name)
+                color=_C[name], label=_NAME[name])
     ax2.set_xticks(np.arange(7))
     ax2.set_xticklabels(labels)
-    ax2.set_xlabel("shortest-path length in the PPI graph")
-    ax2.set_ylabel("proportion of pairs")
-    ax2.set_title("Graph distance to the interaction network")
+    ax2.set_xlabel("steps apart in the interaction network")
+    ax2.set_ylabel("share of pairs")
+    ax2.set_title("How far apart the two proteins are")
     ax2.legend()
 
-    fig.suptitle("Separability: negaverse hard negatives vs random (positives = reference)",
+    fig.suptitle("Our chosen non-pairs look more like real interactions than random ones do",
                  fontsize=12)
     fig.tight_layout(rect=(0, 0, 1, 0.96))
     out_path = Path(out_path)
@@ -92,11 +109,11 @@ def plot_funnel(stats: dict, out_path: str | Path) -> Path:
     gated = stats.get("gated_reviewed", 0)
     emitted = sum(stats.get("emitted", {}).values())
     stages = [
-        ("candidates", cand),
-        ("survived VETO", cand - vetoed),
-        ("scored (GRADED)", scored),
-        ("reviewed (GATED)", gated),
-        ("emitted", emitted),
+        ("candidate pairs", cand),
+        ("kept after quick reject", cand - vetoed),
+        ("scored", scored),
+        ("AI-reviewed", gated),
+        ("final non-pairs kept", emitted),
     ]
     labels = [s for s, _ in stages]
     values = [v for _, v in stages]
@@ -108,8 +125,8 @@ def plot_funnel(stats: dict, out_path: str | Path) -> Path:
         ax.text(v, yi, f"  {v:,}", va="center", fontsize=10)
     ax.set_yticks(y)
     ax.set_yticklabels(labels)
-    ax.set_xlabel("pairs")
-    ax.set_title("Hourglass funnel — pairs kept per stage")
+    ax.set_xlabel("number of pairs")
+    ax.set_title("How pairs were filtered, step by step")
     ax.margins(x=0.15)
     fig.tight_layout()
     out_path = Path(out_path)
@@ -137,9 +154,184 @@ def _random_nonedges(graph: TypedInteractionGraph, n: int, seed: int):
     return out
 
 
+def _is_risky(r) -> bool:
+    return "suspected_false_negative" in r.flags
+
+
+def plot_quadrant(graph: TypedInteractionGraph, records, out_path: str | Path,
+                  seed: int = 0, n_ref: int = 500) -> Path:
+    """Two INDEPENDENT lenses at once (Lucy's three-regime framing):
+      x = "looks like a real interaction"  — network proximity (topology risk)
+      y = "biology says they can interact" — shared subcellular compartments
+    A pair can look real by the network yet be biologically impossible (bottom-
+    right) — those are the strong hard negatives; ones that look real AND could
+    co-locate (top-right, mixed with positives) are the risky suspected positives;
+    random pairs sit far left. Needs compartment annotations (rich on HuRI)."""
+    from ..streams import TopologyFilter
+    from ..io.annotations import build_annotation_table
+    tf = TopologyFilter(); tf.fit(graph)
+    ann = build_annotation_table()
+    rng = np.random.default_rng(seed)
+
+    def _risk(u, v):
+        s = tf.score(graph, u, v); ev = s.evidence or {}
+        return float(ev.get("risk", 0.0)) if s.value is not None else 0.0
+
+    def _biocompat(u, v):
+        cu, cv = ann.get(u, {}).get("compartments"), ann.get(v, {}).get("compartments")
+        if not cu or not cv:
+            return None                       # unannotated -> can't place on biology axis
+        union = len(cu | cv)
+        return len(cu & cv) / union if union else None
+
+    edges = [tuple(e) for e in graph.g.edges()]
+    if len(edges) > n_ref:
+        edges = [edges[i] for i in rng.choice(len(edges), n_ref, replace=False)]
+    hard = [(r.u, r.v) for r in records if r.mode == "train" and not _is_risky(r)]
+    risky = [(r.u, r.v) for r in records if _is_risky(r)]
+    rand = _random_nonedges(graph, n_ref, seed)
+    cats = [("real interactions", edges, "#2a9d8f", 0.45),
+            ("random non-pairs", rand, "#adb5bd", 0.4),
+            ("our chosen non-pairs", hard, "#e9c46a", 0.75),
+            ("risky — may interact", risky, "#e63946", 0.9)]
+
+    fig, ax = plt.subplots(figsize=(8, 6.6))
+    total = 0
+    for name, pairs, col, a in cats:
+        xs, ys = [], []
+        for u, v in pairs:
+            y = _biocompat(u, v)
+            if y is None:
+                continue
+            xs.append(_risk(u, v)); ys.append(y)
+        if xs:
+            yj = np.array(ys) + rng.uniform(-0.008, 0.008, len(ys))   # jitter the y=0 pile
+            ax.scatter(xs, yj, s=16, alpha=a, color=col, label=f"{name} (n={len(xs)})")
+            total += len(xs)
+
+    ax.set_xlim(-0.02, max(0.02, ax.get_xlim()[1]))
+    ax.axhline(0.05, color="#999", lw=0.8, ls="--")
+    xm = 0.5 * (ax.get_xlim()[1])
+    ax.axvline(xm, color="#999", lw=0.8, ls="--")
+    ax.text(0.98, 0.98, "look real +\ncould co-locate\n→ risky", transform=ax.transAxes,
+            ha="right", va="top", fontsize=8.5, color="#b0413a")
+    ax.text(0.98, 0.02, "look real +\ncan't co-locate\n→ strong non-pair", transform=ax.transAxes,
+            ha="right", va="bottom", fontsize=8.5, color="#b07d18")
+    ax.text(0.02, 0.5, "don't look real\n→ easy", transform=ax.transAxes,
+            ha="left", va="center", fontsize=8.5, color="#666")
+    ax.set_xlabel("looks like a real interaction   (network proximity) →")
+    ax.set_ylabel("biology says they can interact   (shared compartments) →")
+    ax.set_title("Two lenses: does it look real, and can biology allow it?")
+    ax.legend(loc="upper left", fontsize=8.5, framealpha=0.9)
+    if total < 20:
+        ax.text(0.5, 0.5, "needs compartment annotations\n(run scripts/build_huri_annotations.py"
+                "\nand view --dataset huri)", transform=ax.transAxes, ha="center",
+                va="center", fontsize=11, color="#999")
+    fig.tight_layout()
+    out_path = Path(out_path); fig.savefig(out_path, dpi=130); plt.close(fig)
+    return out_path
+
+
+def plot_confidence_hardness(records, out_path: str | Path) -> Path:
+    """The regime map on negaverse's own axes (Lucy's framing): every emitted
+    negative by confidence (x) and hardness (y). Eval negatives sit safe/low-
+    hardness; train negatives are hard/near-boundary; the `suspected_false_negative`
+    (risky) tail is the low-confidence corner — the pairs that look positive-like."""
+    import matplotlib.pyplot as plt
+    groups = {
+        "benchmark set (confident)": ([], "#457b9d", 0.5),
+        "training set (challenging)": ([], "#e9c46a", 0.6),
+        "risky — may really interact": ([], "#e63946", 0.9),
+    }
+    for r in records:
+        key = ("risky — may really interact" if _is_risky(r)
+               else "training set (challenging)" if r.mode == "train"
+               else "benchmark set (confident)")
+        groups[key][0].append((r.confidence, r.hardness))
+    fig, ax = plt.subplots(figsize=(7.4, 5.2))
+    for name, (pts, col, a) in groups.items():
+        if not pts:
+            continue
+        xs, ys = zip(*pts)
+        ax.scatter(xs, ys, s=16, alpha=a, color=col, label=f"{name} (n={len(pts)})")
+    ax.set_xlabel("how sure we are they DON'T interact  →")
+    ax.set_ylabel("how much it still looks like a real interaction  →")
+    ax.set_title("How confident, and how real-looking, each non-pair is")
+    ax.legend(loc="lower left", fontsize=9)
+    fig.tight_layout()
+    out_path = Path(out_path); fig.savefig(out_path, dpi=130); plt.close(fig)
+    return out_path
+
+
+def plot_flag_breakdown(records, out_path: str | Path) -> Path:
+    """How many emitted negatives carry each provenance flag (why a pair is what
+    it is): different_compartment, near_boundary, suspected_false_negative, …"""
+    import matplotlib.pyplot as plt
+    from collections import Counter
+    c = Counter(f for r in records for f in r.flags)
+    if not c:
+        c = Counter({"(no flags)": len(records)})
+    labels, vals = zip(*c.most_common())         # raw provenance flag ids (audit panel)
+    fig, ax = plt.subplots(figsize=(8.5, max(2.4, 0.55 * len(labels) + 1)))
+    y = np.arange(len(labels))[::-1]
+    ax.barh(y, vals, color="#2a9d8f", height=0.6)
+    for yi, v in zip(y, vals):
+        ax.text(v, yi, f"  {v}", va="center", fontsize=10)
+    ax.set_yticks(y); ax.set_yticklabels(labels, fontfamily="monospace", fontsize=9)
+    ax.set_xlabel("number of emitted pairs")
+    ax.set_title("Provenance flags per emitted pair")
+    ax.margins(x=0.15); fig.tight_layout()
+    out_path = Path(out_path); fig.savefig(out_path, dpi=130); plt.close(fig)
+    return out_path
+
+
+def plot_manifold(graph: TypedInteractionGraph, records, out_path: str | Path,
+                  seed: int = 0, n_ref: int = 500) -> Path:
+    """Lucy's 4-regime manifold: PCA of pairs in topology-feature space —
+    positives (the manifold), random negatives (far), hard negatives (close but
+    distinguishable), and risky negatives (inside the positive-like cloud)."""
+    import matplotlib.pyplot as plt
+    from sklearn.decomposition import PCA
+    from ..bench.benchmark import _features
+    adj = {n: set(graph.g.neighbors(n)) for n in graph.g.nodes()}
+    rng = np.random.default_rng(seed)
+    edges = [tuple(e) for e in graph.g.edges()]
+    if len(edges) > n_ref:
+        edges = [edges[i] for i in rng.choice(len(edges), n_ref, replace=False)]
+    hard = [(r.u, r.v) for r in records if r.mode == "train" and not _is_risky(r)]
+    risky = [(r.u, r.v) for r in records if _is_risky(r)]
+    rand = _random_nonedges(graph, n_ref, seed)
+    cats = [("real interactions", edges, "#2a9d8f", 0.5),
+            ("random non-pairs", rand, "#adb5bd", 0.5),
+            ("our chosen non-pairs", hard, "#e9c46a", 0.7),
+            ("risky — may interact", risky, "#e63946", 0.9)]
+    cats = [(n, p, c, a) for n, p, c, a in cats if p]
+    allp = [pr for _, p, _, _ in cats for pr in p]
+    # network measures are non-negative counts with hub-driven heavy tails
+    # (degree, preferential attachment) — log-compress before standardizing so a
+    # few hubs don't dominate the layout.
+    X = np.log1p(_features(adj, allp))
+    Xz = (X - X.mean(0)) / (X.std(0) + 1e-9)
+    xy = PCA(2, random_state=seed).fit_transform(Xz)
+    fig, ax = plt.subplots(figsize=(7.6, 6))
+    i = 0
+    for name, p, col, a in cats:
+        j = i + len(p)
+        ax.scatter(xy[i:j, 0], xy[i:j, 1], s=14, alpha=a, color=col,
+                   label=f"{name} (n={len(p)})")
+        i = j
+    ax.set_xlabel("network-feature map — axis 1")
+    ax.set_ylabel("network-feature map — axis 2")
+    ax.set_title("Map of protein pairs (many network measures squeezed into 2D)")
+    ax.legend(loc="best", fontsize=9)
+    fig.tight_layout()
+    out_path = Path(out_path); fig.savefig(out_path, dpi=130); plt.close(fig)
+    return out_path
+
+
 def render_all(graph: TypedInteractionGraph, records, out_dir: str | Path,
                stats: dict | None = None, seed: int = 0, n_ref: int = 500):
-    """Render the demo panels from a pipeline run's records (+ stats)."""
+    """Render every demo panel from a pipeline run's records (+ stats)."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(seed)
@@ -151,8 +343,21 @@ def render_all(graph: TypedInteractionGraph, records, out_dir: str | Path,
     hard = [(r.u, r.v) for r in records]
     random_neg = _random_nonedges(graph, min(n_ref, max(len(hard), 1)), seed)
 
-    written = [plot_separability(graph, edges, random_neg, hard,
-                                 out_dir / "separability.png")]
+    written = [plot_separability(graph, edges, random_neg, hard, out_dir / "separability.png")]
+    if records:
+        written.append(plot_quadrant(graph, records, out_dir / "quadrant.png", seed, n_ref))
+        written.append(plot_manifold(graph, records, out_dir / "manifold.png", seed, n_ref))
+        written.append(plot_confidence_hardness(records, out_dir / "confidence_hardness.png"))
+        written.append(plot_flag_breakdown(records, out_dir / "flag_breakdown.png"))
     if stats:
         written.append(plot_funnel(stats, out_dir / "funnel.png"))
+    if records:
+        try:
+            import json as _json
+            from .interactive import compute_traces
+            (out_dir / "interactive3d.json").write_text(
+                _json.dumps(compute_traces(graph, records, seed, n_ref)))
+            written.append(out_dir / "interactive3d.json")
+        except Exception:
+            pass                          # 3D panel is optional
     return written

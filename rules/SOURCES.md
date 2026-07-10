@@ -73,8 +73,11 @@ O00203	RYYVLZVUVIJVGH-UHFFFAOYSA-N
 
 ## Status
 
-Only the manifest (this doc + `sources.yaml`) exists so far. `negaverse/io/sources.py::load_positive_sources()`
-has **not** been written yet, and nothing in `negaverse.cli` or elsewhere reads
-`sources.yaml` — `KnownPositiveVeto` (`negaverse/streams/structured.py`) currently
-only accepts a `known_positives` set passed to it directly in code. `sources.yaml`
-now has staged entries (see below); write the loader before they have any effect.
+**Wired.** `negaverse/io/sources.py::load_positive_sources()` reads this manifest,
+and `KnownPositiveVeto.fit()` (`negaverse/streams/structured.py`) loads every source
+whose `path` exists — restricted to the current graph's node ids, so a PLI source
+never matches a PPI graph — and vetoes those pairs (union-of-sources exclusion).
+A run reports which sources loaded vs. were missing under
+`stats["known_positive_sources"]`. The staged entries below all report `missing`
+until a real 2-column file is placed at each `path`; then it activates with no code
+change. (`KnownPositiveVeto` still also accepts a `known_positives` set directly.)

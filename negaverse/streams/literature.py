@@ -104,6 +104,9 @@ class LiteratureFilter(Filter):
             self.name, value=value, flags=flags,
             evidence={"gated_status": "reviewed", "verdict": verdict,
                       "verdict_confidence": round(conf, 4), "rationale": card.rationale,
+                      # reported confidence for entropy fusion = panel unanimity
+                      # (a split best-of-N vote is a guess; a unanimous one commits)
+                      "confidence": round(float(card.agreement), 4),
                       "evidence": card.evidence, "model": card.model,
                       "votes": card.n_votes, "agreement": card.agreement,
                       "vote_counts": card.vote_counts},

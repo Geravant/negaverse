@@ -1,263 +1,144 @@
 # negaverse
 
-negaverse helps generate better negative examples for interaction datasets.
+**negaverse builds better "these don't go together" examples for biology datasets — and shows its reasoning.**
 
-It was built for the Claude: Life Sciences Hackathon.
-
-> **Initial prototype.** This is an early, end-to-end skeleton. The three scoring
-> methods described below are working but intentionally simple stand-ins — the
-> full-strength streams (learned graph embeddings, richer literature retrieval)
-> will be wired in shortly. Treat the current scores as a demonstration of the
-> pipeline, not the final scoring quality.
-
-Many biology datasets tell us which things do interact — for example, which proteins bind to each other. But machine learning models also need examples of things that do **not** interact.
-
-The problem is that true "non-interactions" are rarely collected carefully. A common shortcut is to randomly pair proteins and pretend they do not interact. That can create noisy training data, because some of those random pairs may actually interact but have not been tested yet.
-
-negaverse tries to make this process safer and more transparent. Instead of creating random negative pairs, it generates negative examples that are:
-
-* matched to the positive examples,
-* scored by confidence,
-* checked against known interactions,
-* and saved with a clear explanation of how each example was created.
-
-Full design notes: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
-Pipeline diagram: [`docs/negaverse-architecture-diagram.html`](docs/negaverse-architecture-diagram.html).
+Built for the Claude: Life Sciences Hackathon.
 
 ---
 
-## What the prototype does
+## The problem, in plain terms
 
-The current prototype works with a SARS-CoV-2 host–pathogen interaction dataset. It uses:
+To teach a computer which proteins **work together**, you show it examples of pairs that **do** (called *positives*) and pairs that **don't** (called *negatives*).
 
-* known viral ↔ human protein interactions as positive examples,
-* host ↔ host protein interactions to understand the graph structure,
-* and Negatome 2.0 as a reference set of known human protein non-interactions.
+Positives are collected carefully by scientists. Negatives usually aren't — the common shortcut is to **pair proteins at random** and assume they don't interact. That's risky: some of those "random non-pairs" actually *do* interact, we just haven't tested them yet. Feeding those mistakes to a model teaches it wrong things.
 
-The main goal is to generate better candidate negatives for the viral ↔ host interaction space.
+**negaverse replaces random guessing with negatives that are:**
+- **matched** to the real examples (so a model can't cheat with shortcuts),
+- **confidence-scored** (how sure are we they don't interact?),
+- **checked** against everything already known to interact,
+- **explained** — every pair comes with the reason it was chosen.
 
----
-
-## Providing input data
-
-The datasets are **not** shipped with this repo — they are third-party and live in `local-docs/`, which is gitignored. Download them yourself and place them at the paths below (or point the loaders at your own files).
-
-**1. Gold negatives — Negatome 2.0** (reference set of known human non-interactions):
-
-```bash
-mkdir -p local-docs/negatome2
-curl -k -o local-docs/negatome2/combined_stringent.txt \
-  https://mips.helmholtz-muenchen.de/proj/ppi/negatome/combined_stringent.txt
-```
-
-**2. Positives — SARS-CoV-2 interactome** (the demo dataset). Obtain the `Network_Table.xlsx` from the Gordon et al. host–pathogen interaction map (Nature, 2020; Krogan lab supplementary data) and place it at:
-
-```
-local-docs/xlsxUploads_.../sars-cov2-spreadsheets/Network_Table.xlsx
-```
-
-Expected columns: `Bait`, `PreyUniprotAcc`, `PreyGeneName`, `is_HumanPPI`.
-
-**3. Human PPI positives — HuRI** (for the downstream benchmark, `python -m negaverse.bench`):
-
-```bash
-mkdir -p local-docs/huri
-curl -kL -o local-docs/huri/HuRI.tsv http://www.interactome-atlas.org/data/HuRI.tsv
-```
-
-A homogeneous human protein–protein interaction map (~52k edges, Ensembl-keyed). Used to test whether negaverse's hard negatives train a better link-prediction model than random negatives (AUROC/AUPRC).
-
-**4. Gold test negatives — Negatome in HuRI space** (optional, for the *fair* benchmark). HuRI is Ensembl-keyed and Negatome UniProt-keyed, so map Negatome into HuRI's node space once (pulls Ensembl gene IDs from UniProt; writes a gitignored cache):
-
-```bash
-PYTHONPATH=. python scripts/build_uniprot_ensembl_map.py   # -> local-docs/mappings/uniprot_to_ensembl.tsv
-python -m negaverse.bench --gold-test-neg --features spectral
-```
-
-Without this, the benchmark tests against *easy* random negatives, which understates the value of hard negatives (see [`docs/BENCHMARK-FINDINGS.md`](docs/BENCHMARK-FINDINGS.md)). With `--gold-test-neg`, the test negatives are biologically-validated non-interactions — the meaningful comparison.
-
-**Custom paths.** Loaders accept a `path=` argument, so you can store the files anywhere:
-
-```python
-from negaverse.io import load_sars_cov2_graph, load_negatome_pairs
-graph = load_sars_cov2_graph(path="my/Network_Table.xlsx")
-gold  = load_negatome_pairs(path="my/negatome.txt")
-```
-
-Never commit downloaded data — keep it under `local-docs/` (already gitignored).
+> **Three words to know:** *positive* = a real interacting pair · *negative* = a non-interacting pair · *hard negative* = a non-pair that *looks* like it could interact, so it's a challenging, useful training example.
 
 ---
 
-## How it works
+## How it works (the "hourglass")
 
-The pipeline follows this flow:
-
-`generate candidate pairs → remove known positives → score candidates → combine scores → create train/eval sets → export results`
-
-**1. Generate candidate pairs.** The system first creates a broad pool of possible protein pairs from the interaction graph. At this stage these are only candidates — some may become useful negatives, others may be removed or marked as risky later.
-
-**2. Remove known positives.** Any pair already listed as a known interaction is removed, so the final negative dataset can't accidentally include confirmed positives.
-
-**3. Score each candidate.** Each remaining candidate is scored from several angles: Does this pair look risky? Does the graph suggest it may be a hidden positive? Is there literature evidence that makes it suspicious? Is it a good match for the positives? A score doesn't claim "this pair definitely does not interact" — it means "based on the available checks, this looks like a safer or riskier negative example."
-
-**4. Combine the scores.** The different scores are combined into one final confidence score. Some methods can also flag a candidate as suspicious or ask the system to avoid using it.
-
-**5. Create two output sets** (from the same run, never mixed):
-
-* **Evaluation set** — matched to the positives, so models can't win with shortcuts like "high-degree proteins are usually positive." Use this for benchmarking.
-* **Training set** — harder negatives, closer to the decision boundary. Use this to help models learn more useful signals.
-
-**6. Export results.** The output files include the generated negative pairs, confidence scores, hardness scores, score details, provenance, and warning flags such as `suspected_false_negative`. Written to:
+Candidate pairs flow through three stages, cheap to expensive:
 
 ```
-out/negatives.csv
-out/negatives.jsonl
-out/stats.json
+   many candidate pairs
+        │
+   1. QUICK REJECT   ── drop anything already known to interact
+        │
+   2. SCORE          ── cheap checks in parallel: network shape,
+        │               biology rules (e.g. "these live in different
+        │               parts of the cell, so they can't meet")
+        │
+   3. AI REVIEW      ── an LLM reads only the few most uncertain pairs
+        │
+   two clean sets out:  a fair BENCHMARK set + a challenging TRAINING set
 ```
 
-The literature scorer runs by default and also writes `out/literature_cards.json`. It is automatically skipped if no API key is available (see Setup), so the core pipeline always runs.
+Every pair that comes out carries its scores, flags, and a plain reason — nothing is a black box.
 
 ---
 
-## Scoring methods
+## What's built so far
 
-| Method | What it does | Status |
+| Piece | What it does | Status |
 |---|---|---|
-| Structured scoring | Removes known positives and applies simple safety rules. | Working (simple) |
-| Topology scoring | Link-prediction risk from graph structure (L3 length-3 paths + resource-allocation + configuration-model baseline). Positive-like pairs are riskier negatives; no-overlap pairs are easy negatives. | Working |
-| Rule-based biology (`rules/*.yaml`) | Declarative biology rules become filters with no code — e.g. co-localization (`disjoint(a.compartments, b.compartments)` → safer negative). Each rule feeds both the deterministic check and the LLM's grounding. Independent of topology. Abstains until its annotation fields are supplied. | Working (engine + co-localization live) |
+| **Pipeline** | The full hourglass: quick-reject → score → AI-review → two output sets | ✅ works end-to-end |
+| **Network-shape check** | Judges a pair by how much it *looks like* a real interaction in the network | ✅ |
+| **Embedding-manifold view** | A second, *independent* graph view: places each protein by who it interacts with, then flags a pair that looks like the crowd of real interactions (a likely hidden positive). Where this view and the network-shape view **disagree**, the pair is sent to AI review. | ✅ (opt-in) |
+| **Biology rules** | Plain-English rules in a text file (`rules/*.yaml`) become checks with **no code** — e.g. co-localization ("different part of the cell ⇒ safe non-pair") | ✅ engine + co-localization live |
+| **AI literature review** | An LLM reads the risky pairs (the ones that look like they might really interact) and returns a reasoned verdict; every run reports how many risky pairs it judged vs. left over, and `--judge-remaining` finishes the tail | ✅ (on by default; skipped without an API key) |
+| **Known-interaction screening** | Removes any pair documented as interacting in outside databases (IntAct, BioGRID, …) | ✅ live — BioGRID + IntAct built by one script (~1.5M human pairs); vetoes 290 false-negatives on HuRI |
+| **Benchmark** | Trains a model on our negatives vs. random ones and measures which is better | ✅ |
+| **Dashboard** | A single web page (`out/report.html`) with plain-language charts, made after each run | ✅ |
 
-Add a rule by hand with [`rules/AUTHORING.md`](rules/AUTHORING.md) (validate via `python scripts/validate_rules.py`), or from a paper with the `rule-from-literature` Claude skill (`.claude/skills/rule-from-literature/`).
-| Literature scoring | Uses an LLM to review the most uncertain pairs and return a structured risk judgment. | Working, on by default (skipped without a key) |
-
-
----
-
-## Evaluation
-
-The pipeline produces a small validation report in `out/stats.json`. It checks things like:
-
-* whether any known positive accidentally appears as a negative,
-* whether the evaluation negatives are well matched to the positives,
-* whether the training negatives are harder than random negatives,
-* and whether reference negatives are handled correctly.
-
-On the demo dataset, the pipeline confirms that no known positives are emitted as negatives, and that the evaluation set is much better matched than random negatives.
+**Adding a new biology rule is editing a text file — no programming.** See [`rules/AUTHORING.md`](rules/AUTHORING.md), or hand a paper to the `rule-from-literature` Claude skill and it writes the rule for you.
 
 ---
 
-## Setup
-
-Requires Python 3.10 or newer.
+## Quick start
 
 ```bash
-git clone <repo>
-cd negaverse
-pip install -e .
+pip install -e .            # core
+pip install -e ".[llm,viz,bench]"   # + AI review, charts, benchmark
+python -m negaverse.cli     # run it → writes out/negatives.csv + out/report.html
+open out/report.html        # the dashboard
 ```
 
-This installs the core dependencies: numpy, pandas, networkx, scipy, openpyxl.
+That's it for the demo. To use the AI review, copy `.env.example` to `.env` and add an API key (it auto-skips without one).
 
-### Enable LLM literature scoring
-
-Literature scoring runs by default, but needs the LLM extra and an API key. With
-neither installed nor configured, the pipeline just skips that step.
+<details>
+<summary><b>Getting the datasets</b> (not shipped — third-party; all live in gitignored <code>local-docs/</code>)</summary>
 
 ```bash
-pip install -e ".[llm]"     # adds anthropic + httpx
-cp .env.example .env
+# gold reference non-interactions (Negatome)
+mkdir -p local-docs/negatome2 && curl -k -o local-docs/negatome2/combined_stringent.txt \
+  https://mips.helmholtz-muenchen.de/proj/ppi/negatome/combined_stringent.txt
+
+# human interaction map for the benchmark (HuRI)
+mkdir -p local-docs/huri && curl -kL -o local-docs/huri/HuRI.tsv \
+  http://www.interactome-atlas.org/data/HuRI.tsv
 ```
 
-Add one or both API keys to `.env`:
+The SARS-CoV-2 demo interactome (`Network_Table.xlsx`, Gordon et al. 2020) goes under `local-docs/`. Helper scripts build the extra biology annotations (all cached in gitignored `local-docs/`):
+- `scripts/build_uniprot_ensembl_map.py` — map Negatome gold negatives into the benchmark's ID space
+- `scripts/build_huri_annotations.py` — cell-compartment + chemistry annotations for the benchmark
+- `scripts/compute_hydrophobicity.py` — protein chemistry from sequence
+- `scripts/build_known_positive_sources.py` — build the BioGRID + IntAct known-interaction screens (downloads the raw human exports, emits UniProt- and Ensembl-space pair files for the SARS and HuRI graphs)
+</details>
 
-```
-ANTHROPIC_API_KEY=sk-ant-...
-OPENROUTER_API_KEY=sk-or-...
-```
+<details>
+<summary><b>Common commands</b></summary>
 
-The `.env` file is ignored by git and loaded automatically. Whichever key is
-present is used (Anthropic preferred); no flags needed.
+```bash
+python -m negaverse.cli --no-literature        # skip the AI review
+python -m negaverse.cli --judge-remaining --out out   # judge any risky pairs a prior run left over
+python -m negaverse.viz --dataset huri         # charts on the human dataset
+python -m negaverse.bench --gold-test-neg --features spectral   # the fair benchmark
+python scripts/build_known_positive_sources.py # build the BioGRID + IntAct known-interaction screens
+python scripts/validate_rules.py               # check the biology rules parse
+```
+</details>
 
 ---
 
-## Running the pipeline
+## What you get out
 
-```bash
-# full pipeline — literature scoring runs automatically when a key is present
-python -m negaverse.cli
-
-# force a specific backend / model
-python -m negaverse.cli --provider openrouter --model anthropic/claude-opus-4-8
-
-# skip the LLM pass entirely
-python -m negaverse.cli --no-literature
+```
+out/negatives.csv / .jsonl   the negative pairs, with confidence + reasons
+out/stats.json               a self-check report (no mistakes leaked in? well-matched?)
+out/report.html              the dashboard — open this
+out/literature_cards.json    the AI's verdicts on the uncertain pairs
 ```
 
-Outputs are saved in `out/`.
+The dashboard has: a **map** of pairs (real vs. random vs. our hard vs. risky), a **confidence chart**, the **reasons breakdown**, the **funnel**, and the **AI review** you can expand.
 
-### Demo visualizations
+---
 
-```bash
-pip install -e ".[viz]"                 # adds matplotlib
-python -m negaverse.viz --dataset sars  # or --dataset huri
-```
+## Where we are & what's next
 
-Writes `out/separability.png` (hard negatives sit closer to the positives than
-random ones, on common-neighbour and graph-distance axes) and `out/funnel.png`
-(the hourglass: pairs kept per stage).
-
-### Using it from Python
-
-```python
-from negaverse import run_pipeline, PipelineConfig
-from negaverse.io import load_sars_cov2_graph
-
-graph = load_sars_cov2_graph()
-result = run_pipeline(
-    graph,
-    PipelineConfig(n_eval=300, n_train=300, match_on_type="viral"),
-)
-for record in result.records[:3]:
-    print(record.u, record.v, record.mode, record.confidence, record.flags)
-```
-
-### Running tests
-
-```bash
-python -m tests.test_smoke   # pipeline: no leakage, disjoint split, matched eval, harder train
-python -m tests.test_llm     # LLM controller: config, key loading, JSON parsing (no model call)
-```
+- ✅ **Phase 0 — foundation.** The hourglass, the plug-in filter system, the honest benchmark.
+- ✅ **Phase 1 — proteins (mostly done).** Full pipeline on protein–protein data, biology rules firing, the dashboard, and the headline finding above.
+- ▶️ **Finishing Phase 1 — beat random for real.** Stack more independent biology signals (protein chemistry, protein-language-model structure, function) onto the co-localization result, and drop in the outside interaction databases. *This is the current focus.*
+- ⏭️ **Phase 2 — protein + drug.** Reuse the same machinery for protein–ligand (drug) interactions, to show it generalizes.
+- ⏭️ **Phase 3 — polish.** Both modes end-to-end, dashboard, demo.
 
 ---
 
 ## Project layout
 
 ```
-negaverse/
-  graph.py          graph data structures
-  candidates.py     candidate pair generation
-  streams/          scoring methods
-  fusion.py         combines scores
-  matching.py       creates train and evaluation splits
-  pipeline.py       main pipeline
-  eval.py           validation metrics
-  schema.py         output record format
-  io/               data loaders
-  llm/              optional LLM literature scoring
-  cli.py            command-line runner
-docs/               design notes and diagram
-local-docs/         local datasets, ignored by git
+negaverse/     the engine (pipeline, filters, benchmark, charts)
+rules/         biology rules as plain text (edit these — no code)
+scripts/       data-prep + analysis helpers
+docs/          design notes + the honest benchmark write-up
+local-docs/    downloaded datasets (never committed)
+tests/         checks that everything still works
 ```
 
----
-
-## Current status
-
-The project runs end-to-end on the SARS-CoV-2 demo dataset. Working pieces: candidate generation, known-positive filtering, structured scoring, graph scoring, LLM literature scoring (on by default, auto-skipped without a key), train/evaluation split, provenance, and validation reporting.
-
-The scoring methods are simple first versions — proper streams will be wired in shortly. Next steps:
-
-* add a human ↔ human positive interaction dataset,
-* make the Negatome benchmark more directly comparable,
-* improve graph embeddings,
-* and make the scoring system easier to configure.
+More depth: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · [`docs/BENCHMARK-FINDINGS.md`](docs/BENCHMARK-FINDINGS.md) · [`docs/ADDING-A-FILTER.md`](docs/ADDING-A-FILTER.md) · [`rules/AUTHORING.md`](rules/AUTHORING.md)

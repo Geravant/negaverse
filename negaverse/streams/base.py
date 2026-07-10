@@ -34,6 +34,16 @@ class Filter(ABC):
     stage: Stage = Stage.GRADED
     #: interaction types this filter applies to
     modalities: frozenset = frozenset({"ppi", "pli"})
+    #: whether the pipeline includes this filter in the default selection for its
+    #: modality. Set False for heavier / experimental filters that must be opted
+    #: into by name (they stay registered and buildable — see build_filters).
+    default: bool = True
+    #: whether this filter supplies the hardness / near-boundary signal that drives
+    #: the train-vs-eval split. The orchestrator reads it from whichever GRADED
+    #: filter declares this — so the "what makes a negative hard" knowledge lives in
+    #: the filter, not the pipeline. Such a filter should expose the magnitude in
+    #: evidence["hardness"] (or evidence["risk"]). At most one per run is used.
+    provides_hardness: bool = False
 
     def fit(self, graph: TypedInteractionGraph) -> None:
         """Optional: precompute over the graph before scoring."""
