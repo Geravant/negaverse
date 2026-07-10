@@ -1,0 +1,94 @@
+# External known-positive interaction sources, fed to KnownPositiveVeto
+# (negaverse/streams/structured.py). See SOURCES.md for the field contract.
+#
+# Different mechanism from ppi.yaml/pli.yaml: a rule *scores* how plausible a
+# non-edge is; an entry here is a plain lookup table of pairs documented as
+# interacting somewhere, even if absent from whatever graph the pipeline is
+# currently loading. A candidate matching any pair in any listed source is
+# vetoed outright, same as a positive edge already in the graph.
+#
+# Staged entries below — `path` files are not yet placed under local-docs/, so
+# every source currently warns and contributes nothing (see SOURCES.md
+# "Status": the loader itself, negaverse/io/sources.py::load_positive_sources(),
+# hasn't been written yet either). Fill in real version/date once sourced and
+# place the corresponding file before relying on any of these.
+
+# --- ppi: protein-protein gold-standard databases ---------------------------
+
+- name: intact
+  modality: ppi
+  path: local-docs/intact/intact_human_pairs.tsv
+  id_space: uniprot
+  description: IntAct curated protein-protein physical interactions (EBI).
+  source: "IntAct, https://www.ebi.ac.uk/intact/, version/date TODO"
+
+- name: biogrid_human
+  modality: ppi
+  path: local-docs/biogrid/biogrid_human_pairs.tsv
+  id_space: uniprot
+  description: BioGRID human-human physical interactions.
+  source: "BioGRID, https://thebiogrid.org, version/date TODO"
+
+- name: dip
+  modality: ppi
+  path: local-docs/dip/dip_human_pairs.tsv
+  id_space: uniprot
+  description: DIP (Database of Interacting Proteins) experimentally determined interactions.
+  source: "DIP, https://dip.doe-mbi.ucla.edu/dip/Main.cgi, version/date TODO"
+
+- name: hprd
+  modality: ppi
+  path: local-docs/hprd/hprd_human_pairs.tsv
+  id_space: uniprot
+  description: >
+    HPRD human protein-protein interactions. HPRD's raw export is keyed by
+    gene symbol, not UniProt — resolve gene symbols to UniProt accessions
+    (e.g. via HGNC / UniProt ID mapping, following the pattern in
+    scripts/build_uniprot_ensembl_map.py) before placing the file at `path`,
+    so `id_space` here reflects the post-mapping file, not HPRD's native
+    format. Curation stopped around 2010; treat as a legacy/frozen source.
+  source: "HPRD, http://www.hprd.org, version/date TODO"
+
+# --- pli: protein-ligand gold-standard databases -----------------------------
+
+- name: biolip2
+  modality: pli
+  path: local-docs/biolip2/biolip2_pairs.tsv
+  id_space: uniprot/pdb_ccd
+  description: BioLiP2 PDB co-crystal protein-ligand binding pairs (direct physical binding).
+  source: "BioLiP2, https://zhanggroup.org/BioLiP/, version/date TODO"
+
+- name: bindingdb
+  modality: pli
+  path: local-docs/bindingdb/bindingdb_pairs.tsv
+  id_space: uniprot/inchikey
+  description: >
+    BindingDB direct-binding (Ki/Kd) protein-ligand pairs. Use exact InChIKey
+    matches for this static list — BindingDB's own API does fuzzy
+    Tanimoto/SMILES similarity search, which doesn't fit a flat pairs file.
+  source: "BindingDB, https://bindingdb.org/, version/date TODO"
+
+- name: pdbbind_plus
+  modality: pli
+  path: local-docs/pdbbind/pdbbind_pairs.tsv
+  id_space: uniprot/pdb_ccd
+  description: PDBbind+ structure + affinity protein-ligand pairs (Kd/Ki preferred over IC50).
+  source: "PDBbind+, http://pdbbind.org.cn/, version/date TODO (registration required)"
+
+- name: chembl
+  modality: pli
+  path: local-docs/chembl/chembl_pairs.tsv
+  id_space: uniprot/inchikey
+  description: >
+    ChEMBL binding-assay (assay_type=B, Ki/Kd) protein-ligand pairs; exclude
+    functional-only assays (IC50/EC50) — those aren't direct-binding evidence.
+  source: "ChEMBL, https://www.ebi.ac.uk/chembl/, version/date TODO"
+
+- name: gtopdb
+  modality: pli
+  path: local-docs/gtopdb/gtopdb_pairs.tsv
+  id_space: uniprot/inchikey
+  description: >
+    Guide to Pharmacology (GtoPdb) curated pKi/pKd protein-ligand pairs;
+    exclude functional-only activity types (pIC50/pEC50/pA2/pKB).
+  source: "Guide to Pharmacology, https://www.guidetopharmacology.org/, version/date TODO"
