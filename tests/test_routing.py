@@ -12,7 +12,7 @@ from __future__ import annotations
 from negaverse import run_pipeline, PipelineConfig
 from negaverse.graph import TypedInteractionGraph
 from negaverse.matching import Scored
-from negaverse.pipeline import _disagreement_keys, _contested
+from negaverse.pipeline import _disagreement_flags, _contested
 from negaverse.schema import StreamScore
 from negaverse.streams import (
     Filter, Stage, KnownPositiveVeto, StructuredStream, TopologyFilter,
@@ -26,13 +26,16 @@ def _s(u, v, topo, manifold, conf=0.5, hardness=0.0):
 
 
 # --- unit: disagreement detection --------------------------------------
-def test_disagreement_keys_threshold():
+def test_disagreement_flags_threshold():
     pool = [_s("a", "b", 0.9, 0.3),      # |0.9-0.3| = 0.6  -> disagree
             _s("c", "d", 0.5, 0.55),     # 0.05            -> agree
             _s("e", "f", 0.8, None)]     # manifold absent -> ignored
-    keys = _disagreement_keys(pool, thresh=0.25)
-    assert keys == {("a", "b")}
-    assert _disagreement_keys(pool, thresh=0.0) == set()      # disabled
+    pairs = [("topology", "manifold")]
+    flags = _disagreement_flags(pool, 0.25, pairs)
+    assert set(flags) == {("a", "b")}
+    assert flags[("a", "b")] == ["topology_manifold_disagreement"]   # flag derives from the pair
+    assert _disagreement_flags(pool, 0.0, pairs) == {}               # disabled
+    assert _disagreement_flags(pool, 0.25, []) == {}                 # no pairs configured
 
 
 def test_contested_prioritises_disagreement_within_cap():

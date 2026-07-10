@@ -48,6 +48,7 @@ _FLOOR_VALUE = 0.98     # confidence for a no-overlap (easy) negative
 class TopologyFilter(Filter):
     name = "topology"
     stage = Stage.GRADED
+    provides_hardness = True        # its link-risk drives the hard/easy split (PPI)
 
     def __init__(self) -> None:
         self._nbr: dict[str, set[str]] = {}

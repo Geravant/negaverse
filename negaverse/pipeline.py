@@ -12,6 +12,8 @@ edits here (see docs/ADDING-A-FILTER.md).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Callable
+
 import numpy as np
 
 from .candidates import generate_candidates
@@ -32,9 +34,12 @@ class PipelineConfig:
     max_pool: int = 200_000
     seed: int = 0
     weights: dict[str, float] | None = None
-    # node type whose positive-degree distribution the eval set is matched to
-    # (the leakage-prone confounder). None = match on both endpoints' summed degree.
+    # node type whose confounder distribution the eval set is matched to (the
+    # leakage-prone confounder). None = match on both endpoints' summed statistic.
     match_on_type: str | None = None
+    # per-node confounder statistic to degree-match the eval set on. None = graph
+    # degree (the PPI default); supply e.g. molecular weight for other modalities.
+    match_weight_fn: Callable[[TypedInteractionGraph, str], float] | None = None
     # lowest-confidence fraction to flag as suspected false negatives and to route
     # to the GATED stage. Set to 0 to disable.
     false_negative_pct: float = 0.03
@@ -45,11 +50,15 @@ class PipelineConfig:
     # "entropy" = weight each stream by how decisive it is (IG Ch4, ig/).
     fusion_mode: str = "mean"
     fusion_lam: float = 1.0              # entropy sharpness; 0 == "mean"
-    # route pairs where two independent graph views (topology vs manifold) disagree
-    # by at least this margin to the GATED review — that's where the manifold's
-    # unique signal lives (docs/IG-FEATURES.md §3c). 0 disables. No effect unless
-    # both filters are active.
+    # route pairs where two independent signals disagree by at least this margin to
+    # the GATED review — that's where an independent signal's unique value lives
+    # (docs/IG-FEATURES.md §3c). 0 disables.
     disagree_route_thresh: float = 0.25
+    # which stream pairs to check for disagreement. Default is the PPI graph views;
+    # a different modality supplies its own, e.g. [("chemistry", "structure")]. No
+    # effect unless both named streams are active.
+    disagree_pairs: list[tuple[str, str]] = field(
+        default_factory=lambda: [("topology", "manifold")])
 
 
 @dataclass
@@ -97,6 +106,9 @@ def run_pipeline(
     graded_f = [f for f in filters if f.stage == Stage.GRADED]
     gated_f = [f for f in filters if f.stage == Stage.GATED]
     score_names = [f.name for f in graded_f + gated_f]
+    # which GRADED filter supplies the hardness signal (declared, not hardcoded);
+    # first one wins. Empty => hardness is 0 everywhere (split falls back to order).
+    hardness_names = {f.name for f in graded_f if getattr(f, "provides_hardness", False)}
 
     # Layer 1 — candidates (admissible non-edges)
     candidates = generate_candidates(graph, max_pool=cfg.max_pool, seed=cfg.seed)
@@ -130,11 +142,12 @@ def run_pipeline(
         # each stream's *reported* confidence (evidence["confidence"]) — real
         # peakedness that entropy fusion should weight by, kept for the GATED re-fuse.
         reported = {s.stream: (s.evidence or {}).get("confidence") for s in scores}
-        # hardness driver = the topology filter's link-likelihood ("risk"); the
-        # higher it is, the more the pair resembles a real edge (harder negative).
-        topo_s = next((s for s in scores if s.stream in ("topology", "embedding")), None)
-        ev = (topo_s.evidence or {}) if topo_s else {}
-        topo = ev.get("risk", ev.get("topo", 0.0))
+        # hardness driver = the value from whichever GRADED filter declares
+        # provides_hardness (its evidence["hardness"]/["risk"] magnitude); higher =
+        # more like a real edge = harder negative. No PPI filter name is hardcoded.
+        hs = next((s for s in scores if s.stream in hardness_names), None)
+        ev = (hs.evidence or {}) if hs else {}
+        topo = ev.get("hardness", ev.get("risk", ev.get("topo", 0.0)))
         topo_raw.append(topo)
         staged.append((u, v, dict(fused.sub_scores), topo, reported))
 
@@ -151,14 +164,16 @@ def run_pipeline(
         kept.append(Scored(u=u, v=v, confidence=conf, conf_evidence=reported,
                            hardness=round(float(pct[i]), 4), sub_scores=sub))
 
-    # Layer 5 — two products from the same pool. Degree-match the eval set on the
-    # confounder node type's positive-degree distribution.
-    pos_degree = {n: graph.degree(n) for n in graph.g.nodes()}
+    # Layer 5 — two products from the same pool. Match the eval set on a per-node
+    # confounder statistic — graph degree by default (the PPI leakage confounder),
+    # or any modality-supplied match_weight_fn.
+    node_stat_fn = cfg.match_weight_fn or (lambda g, n: g.degree(n))
+    node_stat = {n: node_stat_fn(graph, n) for n in graph.g.nodes()}
 
     def _match_weight(s: Scored) -> float:
         if cfg.match_on_type is None:
-            return pos_degree.get(s.u, 0) + pos_degree.get(s.v, 0)
-        return sum(pos_degree.get(nd, 0) for nd in (s.u, s.v)
+            return node_stat.get(s.u, 0) + node_stat.get(s.v, 0)
+        return sum(node_stat.get(nd, 0) for nd in (s.u, s.v)
                    if graph.node_type.get(nd) == cfg.match_on_type)
 
     mw = np.array([_match_weight(s) for s in kept], dtype=float)
@@ -166,13 +181,15 @@ def run_pipeline(
     eval_keys = {(s.u, s.v) for s in eval_set}
     train_set = hard_train(kept, cfg.n_train, exclude=eval_keys)
 
-    # topology vs manifold disagreement: two independent graph views conflicting is
-    # worth the expensive review even when the fused confidence looks unremarkable
-    # — the manifold's unique signal lives where it disagrees with topology
-    # (docs/IG-FEATURES.md §3c). Flag such pairs and route them to the GATED tail.
-    disagree_keys = _disagreement_keys(eval_set + train_set, cfg.disagree_route_thresh)
-    for k in disagree_keys:
-        graded_flags.setdefault(k, []).append("topology_manifold_disagreement")
+    # signal disagreement: two independent streams conflicting is worth the
+    # expensive review even when the fused confidence looks unremarkable — an
+    # independent signal's unique value lives where it disagrees (IG-FEATURES §3c).
+    # Which stream pairs count is config (cfg.disagree_pairs), not hardcoded.
+    disagree_flags = _disagreement_flags(eval_set + train_set,
+                                         cfg.disagree_route_thresh, cfg.disagree_pairs)
+    disagree_keys = set(disagree_flags)
+    for k, flags in disagree_flags.items():
+        graded_flags.setdefault(k, []).extend(flags)
 
     # --- GATED pass (funnel): run expensive filters only on the contested tail
     # of the *emitted* set, so the LLM verdict is fused into pairs we actually
@@ -236,18 +253,20 @@ def run_pipeline(
     return PipelineResult(records=records, stats=stats)
 
 
-def _disagreement_keys(scored: list[Scored], thresh: float) -> set[tuple[str, str]]:
-    """Pairs where the two independent graph views (topology vs manifold) differ
-    by at least `thresh`. Empty unless both sub-scores are present (manifold is
-    opt-in) and thresh > 0."""
-    keys: set[tuple[str, str]] = set()
-    if not thresh or thresh <= 0:
-        return keys
+def _disagreement_flags(scored: list[Scored], thresh: float,
+                        pairs: list[tuple[str, str]]) -> dict[tuple[str, str], list[str]]:
+    """Map each pair to `<a>_<b>_disagreement` flags for every configured stream
+    pair (a, b) whose sub-scores differ by ≥ `thresh`. A pair contributes only
+    when both its sub-scores are present (opt-in streams may be absent)."""
+    out: dict[tuple[str, str], list[str]] = {}
+    if not thresh or thresh <= 0 or not pairs:
+        return out
     for s in scored:
-        t, m = s.sub_scores.get("topology"), s.sub_scores.get("manifold")
-        if t is not None and m is not None and abs(t - m) >= thresh:
-            keys.add((s.u, s.v))
-    return keys
+        for a, b in pairs:
+            va, vb = s.sub_scores.get(a), s.sub_scores.get(b)
+            if va is not None and vb is not None and abs(va - vb) >= thresh:
+                out.setdefault((s.u, s.v), []).append(f"{a}_{b}_disagreement")
+    return out
 
 
 def _contested(kept: list[Scored], pct: float, gated_max: int | None,
