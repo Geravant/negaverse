@@ -22,19 +22,30 @@ databases here closes that gap — union-of-sources exclusion.
 | field | required | meaning |
 |---|---|---|
 | `name` | ✓ | short slug, used in logs/provenance |
+| `modality` | ✓ | `ppi` or `pli` — which engine side these pairs veto against (mirrors the `modality` field in `rules/ppi.yaml`/`rules/pli.yaml`) |
 | `path` | ✓ | path to a local file of ID pairs (under `local-docs/`, gitignored) |
-| `id_space` | ✓ | ID system the pairs use — `uniprot`, `ensembl`, `gene_symbol`, ... — must match the graph's node ID space or the pairs simply never match anything |
+| `id_space` | ✓ | ID system the pairs use. For `ppi` sources: a single value (`uniprot`, `ensembl`, `gene_symbol`, ...) shared by both columns. For `pli` sources: `<protein_id_space>/<ligand_id_space>` (e.g. `uniprot/inchikey`), since column 1 is a protein ID and column 2 is a ligand ID in a different space. Must match the graph's node ID space or the pairs simply never match anything. |
 | `description` | – | one line: what this source is |
 | `source` | – | citation — name, version/date, URL |
 
 ## File format
 
 Each `path` is a plain 2-column file (tab- or whitespace-separated), one pair
-per line, `#`-comments allowed — the same shape as Negatome's files:
+per line, `#`-comments allowed — the same shape as Negatome's files.
+
+`ppi` sources (both columns share `id_space`):
 
 ```
 P12345	Q9Y4K3
 O00203	Q6ZNK6
+```
+
+`pli` sources (column 1 is protein, column 2 is ligand — a different ID space,
+e.g. `id_space: uniprot/inchikey`):
+
+```
+P12345	BSYNRYMUTXBXSQ-UHFFFAOYSA-N
+O00203	RYYVLZVUVIJVGH-UHFFFAOYSA-N
 ```
 
 ## Adding a source
@@ -44,6 +55,7 @@ O00203	Q6ZNK6
 2. Add an entry to `sources.yaml`:
    ```yaml
    - name: biogrid_human
+     modality: ppi
      path: local-docs/biogrid/biogrid_human_pairs.tsv
      id_space: uniprot
      description: BioGRID human-human physical interactions
@@ -61,5 +73,8 @@ O00203	Q6ZNK6
 
 ## Status
 
-Manifest + loader + wiring into `negaverse.cli` exist. `sources.yaml` itself
-is empty — no external positive database is wired in yet.
+Only the manifest (this doc + `sources.yaml`) exists so far. `negaverse/io/sources.py::load_positive_sources()`
+has **not** been written yet, and nothing in `negaverse.cli` or elsewhere reads
+`sources.yaml` — `KnownPositiveVeto` (`negaverse/streams/structured.py`) currently
+only accepts a `known_positives` set passed to it directly in code. `sources.yaml`
+now has staged entries (see below); write the loader before they have any effect.

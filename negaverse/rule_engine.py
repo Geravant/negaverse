@@ -165,11 +165,22 @@ class Rule:
         return bool(_eval(self._ast, env))
 
 
+_RULE_FILES = ("ppi.yaml", "pli.yaml")
+
+
 def load_rules(rules_dir: str | Path = RULES_DIR) -> list[Rule]:
-    """Load and validate every rule in `rules_dir/*.yaml`."""
+    """Load and validate every rule in `rules_dir/{ppi,pli}.yaml`.
+
+    Scoped to these two named files (not `rules_dir/*.yaml`) because `rules/`
+    also holds non-rule manifests (e.g. `sources.yaml`, a different schema
+    entirely for `KnownPositiveVeto` — see `rules/SOURCES.md`).
+    """
     d = Path(rules_dir)
     rules: list[Rule] = []
-    for path in sorted(d.glob("*.yaml")):
+    for name in _RULE_FILES:
+        path = d / name
+        if not path.exists():
+            continue
         for raw in (yaml.safe_load(path.read_text()) or []):
             try:
                 r = Rule(
