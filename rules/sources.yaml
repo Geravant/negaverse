@@ -10,8 +10,9 @@
 # The loader (negaverse/io/sources.py::load_positive_sources) IS wired now:
 # KnownPositiveVeto.fit() reads this manifest, loads every source whose `path`
 # exists (restricted to the current graph's node ids), and vetoes those pairs.
-# The `path` files below are not yet placed under local-docs/, so each source is
-# reported as "missing" in stats and contributes nothing — place a file at its
+# `enabled: false` a source to exclude it from that union without deleting the
+# entry. The `path` files below that aren't yet placed under local-docs/ are
+# reported as "missing" in stats and contribute nothing — place a file at its
 # `path` (2-column pairs) and it activates automatically. Fill in real
 # version/date once sourced.
 
@@ -25,6 +26,7 @@
 
 - name: intact
   modality: ppi
+  enabled: true
   path: local-docs/intact/intact_human_pairs.tsv
   id_space: uniprot
   description: IntAct curated protein-protein molecular interactions (EBI), human-human.
@@ -32,6 +34,7 @@
 
 - name: intact_human_ensembl
   modality: ppi
+  enabled: true
   path: local-docs/intact/intact_human_pairs_ensembl.tsv
   id_space: ensembl
   description: IntAct human pairs mapped to Ensembl gene ids (engages the HuRI benchmark).
@@ -39,6 +42,7 @@
 
 - name: biogrid_human
   modality: ppi
+  enabled: true
   path: local-docs/biogrid/biogrid_human_pairs.tsv
   id_space: uniprot
   description: BioGRID human-human physical interactions (SWISS-PROT accessions).
@@ -46,6 +50,7 @@
 
 - name: biogrid_human_ensembl
   modality: ppi
+  enabled: true
   path: local-docs/biogrid/biogrid_human_pairs_ensembl.tsv
   id_space: ensembl
   description: BioGRID human physical pairs mapped to Ensembl gene ids (engages the HuRI benchmark).
@@ -55,6 +60,7 @@
 # build script and stay 'missing' until a file is placed by hand. Left staged.
 - name: dip
   modality: ppi
+  enabled: true
   path: local-docs/dip/dip_human_pairs.tsv
   id_space: uniprot
   description: DIP (Database of Interacting Proteins) experimentally determined interactions.
@@ -62,6 +68,7 @@
 
 - name: hprd
   modality: ppi
+  enabled: true
   path: local-docs/hprd/hprd_human_pairs.tsv
   id_space: uniprot
   description: >
@@ -73,10 +80,44 @@
     format. Curation stopped around 2010; treat as a legacy/frozen source.
   source: "HPRD, http://www.hprd.org — registration-walled + legacy (frozen ~2010); not auto-fetchable"
 
+- name: corum
+  modality: ppi
+  enabled: true
+  path: local-docs/corum/corum_human_pairs.tsv
+  id_space: uniprot
+  description: >
+    CORUM mammalian protein-complex subunit lists. Pairs must be derived as
+    all pairwise combinations of subunits within each complex (co-complex
+    membership as an interaction proxy), not taken directly from the source.
+  source: "CORUM, https://mips.helmholtz-muenchen.de/corum/ — homepage only:
+    the site is a JS-rendered SPA (curl/WebFetch can't crawl it, every
+    guessed download path returns the same HTML shell); get the current
+    release's allComplexes.txt/humanComplexes.txt from the in-browser
+    Download page and record the exact version here once fetched."
+
+- name: string
+  modality: ppi
+  enabled: true
+  path: local-docs/string/string_human_pairs.tsv
+  id_space: uniprot
+  description: >
+    STRING physical-subnetwork pairs at high confidence (combined_score >=
+    0.7, i.e. STRING's own "high confidence" cutoff) used as known positives.
+    STRING's native IDs are Ensembl protein IDs prefixed with taxid (e.g.
+    9606.ENSP00000269305) — resolve to UniProt via STRING's own
+    protein.aliases file before placing at `path`; see the low-confidence
+    (<0.15) non-interaction threshold instead in rules/ppi.yaml
+    (string_low_confidence_non_interaction) — a different mechanism, not this
+    known-positive list.
+  source: "STRING v12.0 (physical subnetwork), verified 2026-07-10:
+    https://stringdb-downloads.org/download/protein.physical.links.v12.0/9606.protein.physical.links.v12.0.txt.gz
+    (id mapping: https://stringdb-downloads.org/download/protein.aliases.v12.0/9606.protein.aliases.v12.0.txt.gz)"
+
 # --- pli: protein-ligand gold-standard databases -----------------------------
 
 - name: biolip2
   modality: pli
+  enabled: true
   path: local-docs/biolip2/biolip2_pairs.tsv
   id_space: uniprot/pdb_ccd
   description: BioLiP2 PDB co-crystal protein-ligand binding pairs (direct physical binding).
@@ -84,6 +125,7 @@
 
 - name: bindingdb
   modality: pli
+  enabled: true
   path: local-docs/bindingdb/bindingdb_pairs.tsv
   id_space: uniprot/inchikey
   description: >
@@ -94,6 +136,7 @@
 
 - name: pdbbind_plus
   modality: pli
+  enabled: true
   path: local-docs/pdbbind/pdbbind_pairs.tsv
   id_space: uniprot/pdb_ccd
   description: PDBbind+ structure + affinity protein-ligand pairs (Kd/Ki preferred over IC50).
@@ -101,6 +144,7 @@
 
 - name: chembl
   modality: pli
+  enabled: true
   path: local-docs/chembl/chembl_pairs.tsv
   id_space: uniprot/inchikey
   description: >
@@ -110,6 +154,7 @@
 
 - name: gtopdb
   modality: pli
+  enabled: true
   path: local-docs/gtopdb/gtopdb_pairs.tsv
   id_space: uniprot/inchikey
   description: >

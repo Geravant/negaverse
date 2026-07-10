@@ -23,6 +23,7 @@ databases here closes that gap — union-of-sources exclusion.
 |---|---|---|
 | `name` | ✓ | short slug, used in logs/provenance |
 | `modality` | ✓ | `ppi` or `pli` — which engine side these pairs veto against (mirrors the `modality` field in `rules/ppi.yaml`/`rules/pli.yaml`) |
+| `enabled` | ✓ | `true`/`false` — lets a user pick which databases are actually unioned into `KnownPositiveVeto` without deleting the entry. `load_positive_sources()` (once written) must skip any entry with `enabled: false`. |
 | `path` | ✓ | path to a local file of ID pairs (under `local-docs/`, gitignored) |
 | `id_space` | ✓ | ID system the pairs use. For `ppi` sources: a single value (`uniprot`, `ensembl`, `gene_symbol`, ...) shared by both columns. For `pli` sources: `<protein_id_space>/<ligand_id_space>` (e.g. `uniprot/inchikey`), since column 1 is a protein ID and column 2 is a ligand ID in a different space. Must match the graph's node ID space or the pairs simply never match anything. |
 | `description` | – | one line: what this source is |
@@ -56,6 +57,7 @@ O00203	RYYVLZVUVIJVGH-UHFFFAOYSA-N
    ```yaml
    - name: biogrid_human
      modality: ppi
+     enabled: true
      path: local-docs/biogrid/biogrid_human_pairs.tsv
      id_space: uniprot
      description: BioGRID human-human physical interactions
