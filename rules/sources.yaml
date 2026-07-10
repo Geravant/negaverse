@@ -17,26 +17,48 @@
 
 # --- ppi: protein-protein gold-standard databases ---------------------------
 
+# Build the four files below from raw downloads with:
+#   PYTHONPATH=. python scripts/build_known_positive_sources.py
+# It extracts human-human physical pairs from BioGRID + IntAct into both a
+# UniProt file (matches the SARS-CoV-2 graph, whose host nodes are UniProt) and
+# an Ensembl-gene file (matches the HuRI benchmark, whose nodes are ENSG).
+
 - name: intact
   modality: ppi
   path: local-docs/intact/intact_human_pairs.tsv
   id_space: uniprot
-  description: IntAct curated protein-protein physical interactions (EBI).
-  source: "IntAct, https://www.ebi.ac.uk/intact/, version/date TODO"
+  description: IntAct curated protein-protein molecular interactions (EBI), human-human.
+  source: "IntAct, https://www.ebi.ac.uk/intact/, current release (FTP psimitab/species/human, 2026-01)"
+
+- name: intact_human_ensembl
+  modality: ppi
+  path: local-docs/intact/intact_human_pairs_ensembl.tsv
+  id_space: ensembl
+  description: IntAct human pairs mapped to Ensembl gene ids (engages the HuRI benchmark).
+  source: "IntAct, mapped via UniProt->ENSG (local-docs/mappings/uniprot_ensg_human.tsv)"
 
 - name: biogrid_human
   modality: ppi
   path: local-docs/biogrid/biogrid_human_pairs.tsv
   id_space: uniprot
-  description: BioGRID human-human physical interactions.
-  source: "BioGRID, https://thebiogrid.org, version/date TODO"
+  description: BioGRID human-human physical interactions (SWISS-PROT accessions).
+  source: "BioGRID 5.0.259, https://thebiogrid.org, tab3 ORGANISM Homo_sapiens (2026-07)"
 
+- name: biogrid_human_ensembl
+  modality: ppi
+  path: local-docs/biogrid/biogrid_human_pairs_ensembl.tsv
+  id_space: ensembl
+  description: BioGRID human physical pairs mapped to Ensembl gene ids (engages the HuRI benchmark).
+  source: "BioGRID 5.0.259, mapped via UniProt->ENSG (local-docs/mappings/uniprot_ensg_human.tsv)"
+
+# DIP and HPRD are registration/login-walled — they cannot be fetched by the
+# build script and stay 'missing' until a file is placed by hand. Left staged.
 - name: dip
   modality: ppi
   path: local-docs/dip/dip_human_pairs.tsv
   id_space: uniprot
   description: DIP (Database of Interacting Proteins) experimentally determined interactions.
-  source: "DIP, https://dip.doe-mbi.ucla.edu/dip/Main.cgi, version/date TODO"
+  source: "DIP, https://dip.doe-mbi.ucla.edu/dip/Main.cgi — download requires a (free) login; not auto-fetchable"
 
 - name: hprd
   modality: ppi
@@ -49,7 +71,7 @@
     scripts/build_uniprot_ensembl_map.py) before placing the file at `path`,
     so `id_space` here reflects the post-mapping file, not HPRD's native
     format. Curation stopped around 2010; treat as a legacy/frozen source.
-  source: "HPRD, http://www.hprd.org, version/date TODO"
+  source: "HPRD, http://www.hprd.org — registration-walled + legacy (frozen ~2010); not auto-fetchable"
 
 # --- pli: protein-ligand gold-standard databases -----------------------------
 

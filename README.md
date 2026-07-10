@@ -52,8 +52,8 @@ Every pair that comes out carries its scores, flags, and a plain reason — noth
 | **Network-shape check** | Judges a pair by how much it *looks like* a real interaction in the network | ✅ |
 | **Embedding-manifold view** | A second, *independent* graph view: places each protein by who it interacts with, then flags a pair that looks like the crowd of real interactions (a likely hidden positive). Where this view and the network-shape view **disagree**, the pair is sent to AI review. | ✅ (opt-in) |
 | **Biology rules** | Plain-English rules in a text file (`rules/*.yaml`) become checks with **no code** — e.g. co-localization ("different part of the cell ⇒ safe non-pair") | ✅ engine + co-localization live |
-| **AI literature review** | An LLM double-checks only the most uncertain pairs and returns a reasoned verdict | ✅ (on by default; skipped without an API key) |
-| **Known-interaction screening** | Removes any pair documented as interacting in outside databases (IntAct, BioGRID, …) | ✅ wired (needs the data files placed) |
+| **AI literature review** | An LLM reads the risky pairs (the ones that look like they might really interact) and returns a reasoned verdict; every run reports how many risky pairs it judged vs. left over, and `--judge-remaining` finishes the tail | ✅ (on by default; skipped without an API key) |
+| **Known-interaction screening** | Removes any pair documented as interacting in outside databases (IntAct, BioGRID, …) | ✅ live — BioGRID + IntAct built by one script (~1.5M human pairs); vetoes 290 false-negatives on HuRI |
 | **Benchmark** | Trains a model on our negatives vs. random ones and measures which is better | ✅ |
 | **Dashboard** | A single web page (`out/report.html`) with plain-language charts, made after each run | ✅ |
 
@@ -89,6 +89,7 @@ The SARS-CoV-2 demo interactome (`Network_Table.xlsx`, Gordon et al. 2020) goes 
 - `scripts/build_uniprot_ensembl_map.py` — map Negatome gold negatives into the benchmark's ID space
 - `scripts/build_huri_annotations.py` — cell-compartment + chemistry annotations for the benchmark
 - `scripts/compute_hydrophobicity.py` — protein chemistry from sequence
+- `scripts/build_known_positive_sources.py` — build the BioGRID + IntAct known-interaction screens (downloads the raw human exports, emits UniProt- and Ensembl-space pair files for the SARS and HuRI graphs)
 </details>
 
 <details>
@@ -96,8 +97,10 @@ The SARS-CoV-2 demo interactome (`Network_Table.xlsx`, Gordon et al. 2020) goes 
 
 ```bash
 python -m negaverse.cli --no-literature        # skip the AI review
+python -m negaverse.cli --judge-remaining --out out   # judge any risky pairs a prior run left over
 python -m negaverse.viz --dataset huri         # charts on the human dataset
 python -m negaverse.bench --gold-test-neg --features spectral   # the fair benchmark
+python scripts/build_known_positive_sources.py # build the BioGRID + IntAct known-interaction screens
 python scripts/validate_rules.py               # check the biology rules parse
 ```
 </details>

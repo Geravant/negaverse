@@ -43,8 +43,9 @@ class PipelineConfig:
     # lowest-confidence fraction to flag as suspected false negatives and to route
     # to the GATED stage. Set to 0 to disable.
     false_negative_pct: float = 0.03
-    # max pairs sent to the (expensive) GATED filters; None = no cap.
-    gated_max: int | None = 8
+    # max pairs sent to the (expensive) GATED filters; None = no cap. The tail
+    # of risky pairs beyond this cap stays unjudged (reported in risky_coverage).
+    gated_max: int | None = 40
     sources_version: str = "sars-cov2-network/v1+negatome2"
     # fusion strategy: "mean" = fixed-weight mean (default, unchanged);
     # "entropy" = weight each stream by how decisive it is (IG Ch4, ig/).
@@ -197,9 +198,9 @@ def run_pipeline(
     gated_reviewed = 0
     gated_flags: dict[tuple[str, str], list[str]] = {}
     gated_evidence: dict[tuple[str, str], dict] = {}
+    contested_all = _contested(eval_set + train_set, cfg.false_negative_pct, disagree_keys)
+    contested = (contested_all[:cfg.gated_max] if cfg.gated_max is not None else contested_all)
     if gated_f:
-        contested = _contested(eval_set + train_set, cfg.false_negative_pct,
-                               cfg.gated_max, disagree_keys)
         for s in contested:
             reviewed = merged = False
             for f in gated_f:
@@ -235,12 +236,28 @@ def run_pipeline(
             if r.confidence <= thresh and "suspected_false_negative" not in r.flags:
                 r.flags.append("suspected_false_negative")
 
+    # Coverage of the expensive LLM judge over the risky pairs it's meant to
+    # vet: every suspected_false_negative is a candidate mislabeled positive, so
+    # surface how many actually got a verdict vs. were left to the cheap flag.
+    risky = [r for r in records if "suspected_false_negative" in r.flags]
+    risky_judged = [r for r in risky
+                    if "literature" in gated_evidence.get((r.u, r.v), {})]
+    risky_coverage = {
+        "risky": len(risky),
+        "judged": len(risky_judged),
+        "unjudged": len(risky) - len(risky_judged),
+        "gated_cap": cfg.gated_max,
+        "contested_total": len(contested_all),
+    }
+
     stats = {
         "graph": graph.summary(),
         "candidates": len(candidates),
         "vetoed": n_vetoed,
         "scored_pool": len(kept),
         "gated_reviewed": gated_reviewed,
+        "gated_contested": len(contested_all),
+        "risky_coverage": risky_coverage,
         "emitted": {"eval": len(eval_set), "train": len(train_set)},
         "filters": {
             "veto": [f.name for f in veto_f],
@@ -269,12 +286,12 @@ def _disagreement_flags(scored: list[Scored], thresh: float,
     return out
 
 
-def _contested(kept: list[Scored], pct: float, gated_max: int | None,
+def _contested(kept: list[Scored], pct: float,
                disagree_keys: set[tuple[str, str]] | None = None) -> list[Scored]:
-    """The tail worth the expensive gated review: near-boundary (high hardness),
-    lowest-confidence, or topology-vs-manifold disagreement pairs. Capped at
-    gated_max, prioritising disagreement / near-boundary so the cap can't drop
-    them for a merely-low-confidence pair."""
+    """The full tail worth the expensive gated review, sorted by priority:
+    near-boundary (high hardness), lowest-confidence, or topology-vs-manifold
+    disagreement pairs. Returned *uncapped* and priority-sorted — the caller
+    applies gated_max, so the number left unjudged by the cap is visible."""
     disagree_keys = disagree_keys or set()
     out = [s for s in kept if s.hardness >= 0.9 or (s.u, s.v) in disagree_keys]
     if pct > 0 and kept:
@@ -288,8 +305,6 @@ def _contested(kept: list[Scored], pct: float, gated_max: int | None,
     # disagreement / near-boundary first, then most contested (lowest confidence)
     uniq.sort(key=lambda s: (0 if ((s.u, s.v) in disagree_keys or s.hardness >= 0.9)
                              else 1, s.confidence))
-    if gated_max is not None:
-        uniq = uniq[:gated_max]
     return uniq
 
 

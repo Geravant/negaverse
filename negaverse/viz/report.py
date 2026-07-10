@@ -107,7 +107,16 @@ def _cards(stats: dict, validation: dict) -> list[tuple[str, str, str]]:
                   f"{em.get('eval',0)} for a fair benchmark, {em.get('train',0)} harder ones for training"))
     if "candidates" in stats:
         c.append(("Pairs considered", f"{stats['candidates']:,}", "the starting pool of possible non-pairs"))
-    if "gated_reviewed" in stats:
+    rc = stats.get("risky_coverage") or {}
+    if rc.get("risky"):
+        judged, total, un = rc.get("judged", 0), rc.get("risky", 0), rc.get("unjudged", 0)
+        meaning = "risky pairs (possible hidden positives) that got the LLM verdict"
+        if un:
+            meaning += (f" — {un} still unjudged; raise --literature-k "
+                        f"(now {rc.get('gated_cap','?')}) or run --judge-remaining")
+        c.append(("Risky pairs AI-reviewed", f"{judged} of {total}" + (" ✓" if not un else ""),
+                  meaning))
+    elif "gated_reviewed" in stats:
         c.append(("Pairs sent for AI review", str(stats["gated_reviewed"]),
                   "only the most uncertain pairs, to save cost"))
     lk = validation.get("leakage_known_positive")
