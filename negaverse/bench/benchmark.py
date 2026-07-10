@@ -130,6 +130,24 @@ def _negaverse_negatives(graph, train_pos, node_type, n, seed, max_pool):
     return [(r.u, r.v) for r in res.records if r.mode == "train"]
 
 
+def _negaverse_bio_negatives(graph, train_pos, node_type, n, seed, max_pool):
+    """Topology-hard negatives that an INDEPENDENT biology signal also confirms:
+    keep only pairs the co-localization rule flags `different_compartment` (the two
+    proteins share no subcellular compartment, so can't interact). Drops the
+    topologically-hard-but-co-localized pairs that are the likeliest hidden
+    positives. Over-samples hard negatives, then filters, to still return ~n."""
+    tg = TypedInteractionGraph.from_edges(
+        train_pos, dict(node_type), admissible_types=[("protein", "protein")],
+        name="bench-train")
+    cfg = PipelineConfig(modality="ppi", n_eval=0, n_train=max(4 * n, n), max_pool=max_pool,
+                         seed=seed,
+                         filters=["known_positive_veto", "structured", "topology", "rules"])
+    res = run_pipeline(tg, cfg)
+    bio = [(r.u, r.v) for r in res.records
+           if r.mode == "train" and "different_compartment" in r.flags]
+    return bio[:n]
+
+
 def run_benchmark(graph: TypedInteractionGraph, seed: int = 0, test_frac: float = 0.2,
                   max_positives: int | None = 10_000, max_pool: int = 40_000,
                   strategies=("random", "negaverse"),
@@ -194,6 +212,9 @@ def run_benchmark(graph: TypedInteractionGraph, seed: int = 0, test_frac: float 
         if strat == "negaverse":
             train_neg = _negaverse_negatives(graph, train_pos, node_type,
                                              len(train_pos), seed, max_pool)
+        elif strat == "negaverse_bio":
+            train_neg = _negaverse_bio_negatives(graph, train_pos, node_type,
+                                                 len(train_pos), seed, max_pool)
         else:
             train_neg = _random_nonedges(nodes, pos_set, len(train_pos), rng, exclude=test_excl)
         if not train_neg:

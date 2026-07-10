@@ -96,10 +96,18 @@ def main(argv=None) -> None:
                 time.sleep(2 * (attempt + 1))
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
+    merged: dict[str, str] = {}
+    if OUT.exists():                                    # merge, don't clobber other datasets
+        for line in OUT.read_text().splitlines():
+            if line.strip() and not line.startswith("#"):
+                k, v = line.split("\t")[:2]
+                merged[k] = v
+    for n, s in scores.items():
+        merged[n] = str(s)
     with open(OUT, "w") as fh:
-        for n in sorted(scores):
-            fh.write(f"{n}\t{scores[n]}\n")
-    print(f"wrote {len(scores)}/{len(ids)} scores to {OUT}")
+        for n in sorted(merged):
+            fh.write(f"{n}\t{merged[n]}\n")
+    print(f"wrote {len(scores)} new / {len(merged)} total scores to {OUT}")
 
 
 if __name__ == "__main__":
