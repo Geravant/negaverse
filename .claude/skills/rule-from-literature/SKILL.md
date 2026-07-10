@@ -53,6 +53,8 @@ Examples you should look for:
 - Physicochemical constraints (pocket-volume mismatch, polarity/hydrophobicity mismatch).
 - Topological constraints (no shared network neighbors + low configuration-model
   expected edge count; see `negaverse/streams/topology.py::TopologyFilter`).
+- Database-confidence-score constraints (a pair scoring below a database's own
+  minimum reporting threshold, e.g. STRING `combined_score < 0.15`).
 - Expression / context (tissue, cell state, organism).
 - Evolutionary constraints:
   - Lack of co-evolution signal between proteins across orthologs.
@@ -81,7 +83,8 @@ fields that exist (or will exist) in `build_annotation_table()`:
 
 - PPI fields: `a.compartments`, `b.compartments`,
   `a.surface_hydrophobicity`, `b.surface_hydrophobicity`,
-  `a.evolutionary_coupling_score_with_b`, `a.interface_conservation`,
+  `a.evolutionary_coupling_score_with_b`, `a.string_score_with_b`,
+  `a.interface_conservation`,
   `a.degree`, `b.degree`, `a.neighbors`, `b.neighbors`, `a.graph_two_m`.
 - PLI fields: `protein.pocket_volume`, `ligand.volume`,
   `ligand.logp`, `protein.pocket_polarity`, `protein.pocket_hydrophobicity`,
@@ -123,6 +126,7 @@ when: "ligand.volume > protein.pocket_volume * 1.5"
 when: "ligand.logp > 5 and protein.pocket_polarity == 'polar'"
 when: "disjoint(a.neighbors, b.neighbors) and (a.degree * b.degree) / a.graph_two_m < 0.01"
 when: "a.evolutionary_coupling_score_with_b < 0.1"
+when: "a.string_score_with_b < 0.15"
 when: "ligand.lineage_specificity == 'restricted_lineage' and disjoint(ligand.restricted_lineage_taxids, protein.lineage_taxids)"
 ```
 

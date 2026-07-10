@@ -37,6 +37,10 @@ Examples:
   the configuration-model baseline (`deg(a)·deg(b) / 2·|E|`) is small → **safer**
   negative (matches the `no_overlap`/`easy_negative` case in
   `negaverse/streams/topology.py::TopologyFilter`).
+- If STRING's physical-subnetwork confidence for a pair falls below STRING's
+  own minimum reporting threshold (`combined_score < 0.15`) → **safer** negative
+  (PPI) — the database finds no supporting evidence in any of its channels
+  (experiments, curated DBs, co-expression, text-mining, genomic context).
 
 If you can't phrase it this way, it's probably not a filter rule (it may be a
 positive-interaction predictor, which this engine does not encode).
@@ -76,6 +80,7 @@ where they live, and how they are intended to be computed or loaded.
 | `compartments`                    | protein  | Set of GO cellular-component terms, loaded from TSV as in `localization.py` (one node → comma-separated compartments). |
 | `surface_hydrophobicity`          | protein  | Sequence-based surface hydrophobicity score (e.g. Kyte–Doolittle / similar scale, aggregated over exposed or interface residues). |
 | `evolutionary_coupling_score_with_b` | protein  | Score on `a` for its coupling with `b`, from sequence covariation (e.g. EVcouplings; aggregated and normalized to `[0,1]`). |
+| `string_score_with_b`             | protein  | Score on `a` for its STRING (v12.0, physical subnetwork) `combined_score` with `b`, normalized to `[0,1]` (raw score ÷ 1000). STRING's own reporting cutoff is 0.15 — it doesn't return pairs below that by default. |
 | `interface_conservation`          | protein  | Mean conservation over interface residues, derived from MSAs (Consurf/entropy) plus interface annotation (structure/docking/prediction). |
 | `degree`                          | protein  | Graph degree of the protein node in the PPI / heterogeneous network.                                       |
 | `neighbors`                       | protein  | Set of node IDs adjacent to this node in the graph currently loaded; pair with `disjoint`/`shared`/`jaccard` for common-neighbor reasoning (mirrors `TopologyFilter`'s `cn`). |
@@ -123,6 +128,14 @@ Additional fields you **plan** to use and how to compute them:
   - Combine with interface annotation (from docking, co-crystal structure, or
     predicted interface residues) to get an “interface conservation” score
     (mean conservation over interface positions).
+
+- `a.string_score_with_b`
+  - Download STRING's per-species physical-subnetwork links file (v12.0:
+    `https://stringdb-downloads.org/download/protein.physical.links.v12.0/9606.protein.physical.links.v12.0.txt.gz`
+    for human), resolve STRING's native `<taxid>.<Ensembl_protein_id>` keys to
+    UniProt via STRING's own alias file
+    (`.../protein.aliases.v12.0/9606.protein.aliases.v12.0.txt.gz`), and divide
+    `combined_score` by 1000 to normalize to `[0, 1]`.
 
 - Topology fields (if available), computed straight from the graph the pipeline
   is currently running against — mirrors `negaverse/streams/topology.py`:
@@ -262,6 +275,7 @@ when: "ligand.volume > protein.pocket_volume * 1.5"
 when: "ligand.logp > 5 and protein.pocket_polarity == 'polar'"
 when: "disjoint(a.neighbors, b.neighbors) and (a.degree * b.degree) / a.graph_two_m < 0.01"
 when: "a.evolutionary_coupling_score_with_b < 0.1"
+when: "a.string_score_with_b < 0.15"
 when: "ligand.lineage_specificity == 'restricted_lineage' and disjoint(ligand.restricted_lineage_taxids, protein.lineage_taxids)"
 ```
 
@@ -317,6 +331,13 @@ Evolutionary-specific guidance:
   been **lost** (not observed) — ortholog conservation elsewhere still argues
   against confidently calling that non-edge a safe negative.
 
+Database-confidence-score guidance:
+- A pair scoring below a database's own minimum reporting threshold (e.g.
+  STRING `combined_score < 0.15`) aggregates absence of evidence across that
+  database's channels (experiments, curated DBs, co-expression, text-mining,
+  genomic context) — weight in the 0.5–0.6 range. Comprehensive, but not a
+  physical-law-strength constraint the way disjoint compartments is.
+
 When two rules fire on the same pair, their values are combined weighted by
 `weight`.
 
@@ -351,6 +372,12 @@ rationale: >
   Proteins with no detectable co-evolution signal across orthologs are less
   likely to form a conserved physical complex, making a non-edge a safer
   negative.
+
+rationale: >
+  STRING's physical-subnetwork confidence score aggregates evidence across
+  experiments, curation, co-expression, and text-mining; a pair scoring below
+  STRING's own reporting threshold has no supporting evidence in any channel,
+  making a non-edge a safer negative.
 ```
 
 ---
