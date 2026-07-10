@@ -137,9 +137,107 @@ def _random_nonedges(graph: TypedInteractionGraph, n: int, seed: int):
     return out
 
 
+def _is_risky(r) -> bool:
+    return "suspected_false_negative" in r.flags
+
+
+def plot_confidence_hardness(records, out_path: str | Path) -> Path:
+    """The regime map on negaverse's own axes (Lucy's framing): every emitted
+    negative by confidence (x) and hardness (y). Eval negatives sit safe/low-
+    hardness; train negatives are hard/near-boundary; the `suspected_false_negative`
+    (risky) tail is the low-confidence corner — the pairs that look positive-like."""
+    import matplotlib.pyplot as plt
+    groups = {
+        "eval (matched, safe)": ([], "#457b9d", 0.5),
+        "train (hard)": ([], "#e9c46a", 0.6),
+        "risky (suspected FN)": ([], "#e63946", 0.9),
+    }
+    for r in records:
+        key = ("risky (suspected FN)" if _is_risky(r)
+               else "train (hard)" if r.mode == "train" else "eval (matched, safe)")
+        groups[key][0].append((r.confidence, r.hardness))
+    fig, ax = plt.subplots(figsize=(7.4, 5.2))
+    for name, (pts, col, a) in groups.items():
+        if not pts:
+            continue
+        xs, ys = zip(*pts)
+        ax.scatter(xs, ys, s=16, alpha=a, color=col, label=f"{name} (n={len(pts)})")
+    ax.set_xlabel("confidence  (that the pair is a true non-interaction)")
+    ax.set_ylabel("hardness  (topological distance-to-positive percentile)")
+    ax.set_title("Negative regimes: confidence × hardness")
+    ax.legend(loc="lower left", fontsize=9)
+    fig.tight_layout()
+    out_path = Path(out_path); fig.savefig(out_path, dpi=130); plt.close(fig)
+    return out_path
+
+
+def plot_flag_breakdown(records, out_path: str | Path) -> Path:
+    """How many emitted negatives carry each provenance flag (why a pair is what
+    it is): different_compartment, near_boundary, suspected_false_negative, …"""
+    import matplotlib.pyplot as plt
+    from collections import Counter
+    c = Counter(f for r in records for f in r.flags)
+    if not c:
+        c = Counter({"(no flags)": len(records)})
+    labels, vals = zip(*c.most_common())
+    fig, ax = plt.subplots(figsize=(8, max(2.4, 0.5 * len(labels) + 1)))
+    y = np.arange(len(labels))[::-1]
+    ax.barh(y, vals, color="#2a9d8f", height=0.6)
+    for yi, v in zip(y, vals):
+        ax.text(v, yi, f"  {v}", va="center", fontsize=10)
+    ax.set_yticks(y); ax.set_yticklabels(labels)
+    ax.set_xlabel("emitted negatives"); ax.set_title("Flag breakdown (provenance)")
+    ax.margins(x=0.15); fig.tight_layout()
+    out_path = Path(out_path); fig.savefig(out_path, dpi=130); plt.close(fig)
+    return out_path
+
+
+def plot_manifold(graph: TypedInteractionGraph, records, out_path: str | Path,
+                  seed: int = 0, n_ref: int = 500) -> Path:
+    """Lucy's 4-regime manifold: PCA of pairs in topology-feature space —
+    positives (the manifold), random negatives (far), hard negatives (close but
+    distinguishable), and risky negatives (inside the positive-like cloud)."""
+    import matplotlib.pyplot as plt
+    from sklearn.decomposition import PCA
+    from ..bench.benchmark import _features
+    adj = {n: set(graph.g.neighbors(n)) for n in graph.g.nodes()}
+    rng = np.random.default_rng(seed)
+    edges = [tuple(e) for e in graph.g.edges()]
+    if len(edges) > n_ref:
+        edges = [edges[i] for i in rng.choice(len(edges), n_ref, replace=False)]
+    hard = [(r.u, r.v) for r in records if r.mode == "train" and not _is_risky(r)]
+    risky = [(r.u, r.v) for r in records if _is_risky(r)]
+    rand = _random_nonedges(graph, n_ref, seed)
+    cats = [("positive", edges, "#2a9d8f", 0.5),
+            ("random neg", rand, "#adb5bd", 0.5),
+            ("hard neg", hard, "#e9c46a", 0.7),
+            ("risky neg", risky, "#e63946", 0.9)]
+    cats = [(n, p, c, a) for n, p, c, a in cats if p]
+    allp = [pr for _, p, _, _ in cats for pr in p]
+    # topology features are non-negative counts with hub-driven heavy tails
+    # (degree, pref-attachment) — log-compress before standardizing so a few
+    # hubs don't dominate the projection.
+    X = np.log1p(_features(adj, allp))
+    Xz = (X - X.mean(0)) / (X.std(0) + 1e-9)
+    xy = PCA(2, random_state=seed).fit_transform(Xz)
+    fig, ax = plt.subplots(figsize=(7.6, 6))
+    i = 0
+    for name, p, col, a in cats:
+        j = i + len(p)
+        ax.scatter(xy[i:j, 0], xy[i:j, 1], s=14, alpha=a, color=col,
+                   label=f"{name} (n={len(p)})")
+        i = j
+    ax.set_xlabel("PC1 (topology features)"); ax.set_ylabel("PC2")
+    ax.set_title("Manifold: positives vs random / hard / risky negatives")
+    ax.legend(loc="best", fontsize=9)
+    fig.tight_layout()
+    out_path = Path(out_path); fig.savefig(out_path, dpi=130); plt.close(fig)
+    return out_path
+
+
 def render_all(graph: TypedInteractionGraph, records, out_dir: str | Path,
                stats: dict | None = None, seed: int = 0, n_ref: int = 500):
-    """Render the demo panels from a pipeline run's records (+ stats)."""
+    """Render every demo panel from a pipeline run's records (+ stats)."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(seed)
@@ -151,8 +249,11 @@ def render_all(graph: TypedInteractionGraph, records, out_dir: str | Path,
     hard = [(r.u, r.v) for r in records]
     random_neg = _random_nonedges(graph, min(n_ref, max(len(hard), 1)), seed)
 
-    written = [plot_separability(graph, edges, random_neg, hard,
-                                 out_dir / "separability.png")]
+    written = [plot_separability(graph, edges, random_neg, hard, out_dir / "separability.png")]
+    if records:
+        written.append(plot_manifold(graph, records, out_dir / "manifold.png", seed, n_ref))
+        written.append(plot_confidence_hardness(records, out_dir / "confidence_hardness.png"))
+        written.append(plot_flag_breakdown(records, out_dir / "flag_breakdown.png"))
     if stats:
         written.append(plot_funnel(stats, out_dir / "funnel.png"))
     return written

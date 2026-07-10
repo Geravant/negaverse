@@ -84,6 +84,8 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--model", type=str, default=None, help="override the LLM model id")
     ap.add_argument("--literature-k", type=int, default=8,
                     help="how many contested pairs to send to the LLM")
+    ap.add_argument("--no-report", action="store_true",
+                    help="skip writing the out/report.html dashboard")
     ap.add_argument("--votes", type=int, default=5,
                     help="best-of-N majority vote per pair (1 = single call)")
     args = ap.parse_args(argv)
@@ -142,6 +144,17 @@ def main(argv: list[str] | None = None) -> None:
     summary = {"stats": result.stats, "validation": validation}
     with open(out / "stats.json", "w") as fh:
         json.dump(summary, fh, indent=2)
+
+    # ---- dashboard (best-effort; needs the viz extra) ----
+    if not args.no_report:
+        try:
+            from .viz import render_all, build_report
+            render_all(graph, result.records, out, stats=result.stats, seed=args.seed)
+            report = build_report(out, title="negaverse",
+                                  subtitle=f"{graph.name} run")
+            print(f"\nwrote dashboard: {report}  (open in a browser)")
+        except Exception as e:                       # matplotlib/sklearn absent, etc.
+            print(f"\n(skipped dashboard: {e}; install with `pip install -e \".[viz]\"`)")
 
     # ---- report ----
     print("\n=== pipeline stats ===")
