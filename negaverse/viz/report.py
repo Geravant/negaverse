@@ -135,6 +135,29 @@ def _cards(stats: dict, validation: dict) -> list[tuple[str, str, str]]:
     return c
 
 
+def _interactive_panel(out_dir: Path) -> str:
+    """Inline Plotly 3D scatter (portable) — three meaningful axes, hover + rotate."""
+    j = out_dir / "interactive3d.json"
+    if not j.exists():
+        return ""
+    from .interactive import get_plotly_js
+    lib = get_plotly_js()
+    head = ('<section class="panel"><h2>Interactive 3D map — drag to rotate, scroll to zoom, '
+            'hover a dot</h2><p class="cap">Three independent lenses: how much a pair '
+            '<b>looks like a real interaction</b> (x), whether <b>biology allows it</b> — shared '
+            'cell compartments (y), and <b>chemistry match</b> — hydrophobicity (z). Hover any point '
+            'for the two proteins and why it is flagged. Colours are the four regimes.</p>')
+    if not lib:
+        return (head + '<p class="cap"><i>The interactive view needs the Plotly library, which '
+                'is fetched once when the report is built online. Re-run the dashboard with an '
+                'internet connection to enable it.</i></p></section>')
+    data = j.read_text()
+    return (head + '<div id="p3d" style="width:100%;height:580px"></div>'
+            f'<script>{lib}</script>'
+            f'<script>var _D={data};Plotly.newPlot("p3d",_D.traces,_D.layout,'
+            '{responsive:true,displayModeBar:false});</script></section>')
+
+
 def _esc(s: str) -> str:
     return (str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
 
@@ -206,6 +229,7 @@ def build_report(out_dir: str | Path, title: str = "negaverse", subtitle: str = 
         f'<div class="h">{h}</div></div>'
         for k, v, h in _cards(stats, validation))
     panels = "".join(img_block(p) for p in ordered) or "<p>No panels found — run the viz first.</p>"
+    interactive = _interactive_panel(out_dir)
     lit = _lit_details(out_dir)
 
     html = f"""<!doctype html><html><head><meta charset="utf-8">
@@ -241,6 +265,7 @@ def build_report(out_dir: str | Path, title: str = "negaverse", subtitle: str = 
 <div class="wrap">
  <div class="intro">{_INTRO}</div>
  <div class="cards">{cards}</div>
+ {interactive}
  {panels}
  {lit}
 </div></body></html>"""

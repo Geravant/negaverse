@@ -351,4 +351,13 @@ def render_all(graph: TypedInteractionGraph, records, out_dir: str | Path,
         written.append(plot_flag_breakdown(records, out_dir / "flag_breakdown.png"))
     if stats:
         written.append(plot_funnel(stats, out_dir / "funnel.png"))
+    if records:
+        try:
+            import json as _json
+            from .interactive import compute_traces
+            (out_dir / "interactive3d.json").write_text(
+                _json.dumps(compute_traces(graph, records, seed, n_ref)))
+            written.append(out_dir / "interactive3d.json")
+        except Exception:
+            pass                          # 3D panel is optional
     return written
