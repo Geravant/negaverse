@@ -111,6 +111,40 @@ feature, are the two most promising next levers.
 
 ---
 
+## F-5 — PLI (PLINDER): pocket-fit-hard negatives kill the size shortcut, reach chemistry parity
+
+First protein–ligand result. On PLINDER's bipartite graph (93,107 protein–ligand
+binders, 23,300 proteins × 46,493 ligands) topology is dead, so hardness comes from
+`PliPocketFitFilter`: a candidate is hard if the ligand's size fits the pocket the way
+real binders do. Benchmark = train a RandomForest binder-classifier on positives +
+(random | negaverse) negatives, test on held-out positives + fixed random non-pairs,
+under two feature families (20k positives, seed 0):
+
+| features | random | negaverse | Δ |
+|---|---|---|---|
+| **size** (heavy-atoms / MW / pocket-residues / ratio — the selection space) | 0.714 | 0.494 | **−0.219** |
+| **chemistry** (logP / TPSA / rings / QED — independent of size) | 0.665 | 0.656 | **−0.009** |
+
+Reproduce: `PYTHONPATH=. python scripts/pli_benchmark.py`.
+
+**What it means.** The −0.219 under *size* features is the point, not a failure:
+negaverse selects size-compatible non-binders (mean pocket-fit likeness 0.977, *above*
+real binders' 0.753), so it **removes the trivial "ligand too big/small ⇒ non-binder"
+shortcut**. A model trained on random negatives exploits that shortcut and scores 0.714 —
+but only because the *test* negatives are also random (size-mismatched); it's the same
+circularity as PPI F-2. Under **independent chemistry features** negaverse reaches
+**parity** with random (−0.009) — the honest read: pocket-fit-hard negatives are no worse
+than random on a size-independent yardstick, and they eliminate the size shortcut that
+makes random negatives look deceptively good.
+
+Caveat: PLINDER is positives-only, so the *test* negatives here are random (no gold
+non-binders). A rigorous PLI benchmark needs experimentally-verified non-binders (DUD-E
+decoys, or affinity-thresholded pairs). Parity-under-independent-features is the same
+milestone PPI reached at F-4; clearing random decisively needs a gold negative set and a
+stronger independent signal (ligand fingerprints / a docking or affinity score).
+
+---
+
 ## F-2 — The advantage is feature/selection circularity, not a real gain
 
 Two axes, four cells. Δ = negaverse − random, AUROC, range over 3 seeds:

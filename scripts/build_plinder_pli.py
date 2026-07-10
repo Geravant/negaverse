@@ -34,6 +34,7 @@ OUT_EDGES = Path("local-docs/plinder/pli_edges.tsv")
 ANN = Path("local-docs/annotations")
 COLS = ["system_pocket_UniProt", "ligand_ccd_code", "ligand_is_ion", "ligand_is_artifact",
         "ligand_crippen_clogp", "ligand_num_heavy_atoms", "ligand_tpsa",
+        "ligand_molecular_weight", "ligand_num_rings", "ligand_qed",
         "system_num_pocket_residues"]
 
 
@@ -93,11 +94,21 @@ def main():
     n3 = _write_scalar(ANN / "plinder_ligand_tpsa.tsv",
                        lig["ligand_tpsa"].dropna().round(2).to_dict(),
                        "CCD -> topological polar surface area (PLINDER)")
+    n5 = _write_scalar(ANN / "plinder_ligand_mw.tsv",
+                       lig["ligand_molecular_weight"].dropna().round(2).to_dict(),
+                       "CCD -> molecular weight (PLINDER)")
+    n6 = _write_scalar(ANN / "plinder_ligand_rings.tsv",
+                       lig["ligand_num_rings"].dropna().astype(int).to_dict(),
+                       "CCD -> ring count (PLINDER)")
+    n7 = _write_scalar(ANN / "plinder_ligand_qed.tsv",
+                       lig["ligand_qed"].dropna().round(4).to_dict(),
+                       "CCD -> QED drug-likeness (PLINDER)")
     # protein pocket size — median #pocket residues over that protein's systems
     pv = df.groupby("prot")["system_num_pocket_residues"].median().dropna().round(1).to_dict()
     n4 = _write_scalar(ANN / "plinder_pocket_volume.tsv", pv,
                        "UniProt -> median #pocket residues (pocket size proxy, PLINDER)")
-    print(f"annotations: logp={n1:,} volume={n2:,} tpsa={n3:,} pocket_volume={n4:,}")
+    print(f"annotations: logp={n1:,} volume={n2:,} tpsa={n3:,} mw={n5:,} rings={n6:,} "
+          f"qed={n7:,} pocket_volume={n4:,}")
 
 
 if __name__ == "__main__":

@@ -30,6 +30,9 @@ _SCALAR_FIELDS = {
     "logp": f"{ANNOT_DIR}/plinder_ligand_logp.tsv",          # ligand.logp
     "volume": f"{ANNOT_DIR}/plinder_ligand_volume.tsv",      # ligand.volume (heavy atoms)
     "tpsa": f"{ANNOT_DIR}/plinder_ligand_tpsa.tsv",          # ligand polarity proxy
+    "mw": f"{ANNOT_DIR}/plinder_ligand_mw.tsv",              # ligand molecular weight
+    "rings": f"{ANNOT_DIR}/plinder_ligand_rings.tsv",        # ligand ring count
+    "qed": f"{ANNOT_DIR}/plinder_ligand_qed.tsv",            # ligand QED drug-likeness
     "pocket_volume": f"{ANNOT_DIR}/plinder_pocket_volume.tsv",  # protein.pocket_volume (#residues)
 }
 # set-valued fields (node<TAB>comma-separated terms), same shape as localization.
