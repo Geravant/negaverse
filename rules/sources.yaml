@@ -7,11 +7,13 @@
 # currently loading. A candidate matching any pair in any listed source is
 # vetoed outright, same as a positive edge already in the graph.
 #
-# Staged entries below — `path` files are not yet placed under local-docs/, so
-# every source currently warns and contributes nothing (see SOURCES.md
-# "Status": the loader itself, negaverse/io/sources.py::load_positive_sources(),
-# hasn't been written yet either). Fill in real version/date once sourced and
-# place the corresponding file before relying on any of these.
+# The loader (negaverse/io/sources.py::load_positive_sources) IS wired now:
+# KnownPositiveVeto.fit() reads this manifest, loads every source whose `path`
+# exists (restricted to the current graph's node ids), and vetoes those pairs.
+# The `path` files below are not yet placed under local-docs/, so each source is
+# reported as "missing" in stats and contributes nothing — place a file at its
+# `path` (2-column pairs) and it activates automatically. Fill in real
+# version/date once sourced.
 
 # --- ppi: protein-protein gold-standard databases ---------------------------
 

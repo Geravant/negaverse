@@ -25,9 +25,25 @@ class KnownPositiveVeto(Filter):
     name = "known_positive_veto"
     stage = Stage.VETO
 
-    def __init__(self, known_positives: Optional[set[frozenset]] = None):
-        # extra positives from external DBs (union-of-sources exclusion)
-        self.known_positives = known_positives or set()
+    def __init__(self, known_positives: Optional[set[frozenset]] = None,
+                 sources_path: str = "rules/sources.yaml", load_sources: bool = True):
+        # extra positives injected directly, plus the manifest of external DBs
+        self.known_positives: set[frozenset] = set(known_positives or set())
+        self._sources_path = sources_path
+        self._load_sources = load_sources
+        self.sources_report: dict = {}
+
+    def fit(self, graph: TypedInteractionGraph) -> None:
+        # union-of-sources exclusion: veto candidates documented as positives in
+        # IntAct/BioGRID/… even if absent from this graph. Restricted to graph
+        # nodes (so a PLI source can't match a PPI graph) and graceful when the
+        # manifest / its files aren't present.
+        if not self._load_sources:
+            return
+        from ..io.sources import load_positive_sources
+        extra, self.sources_report = load_positive_sources(
+            self._sources_path, restrict_to=set(graph.g.nodes()))
+        self.known_positives |= extra
 
     def score(self, graph: TypedInteractionGraph, u: str, v: str) -> StreamScore:
         if graph.is_positive(u, v) or frozenset((u, v)) in self.known_positives:

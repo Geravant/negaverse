@@ -203,6 +203,8 @@ def run_pipeline(
             "graded": [f.name for f in graded_f],
             "gated": [f.name for f in gated_f],
         },
+        "known_positive_sources": next(
+            (f.sources_report for f in veto_f if getattr(f, "sources_report", None)), {}),
     }
     return PipelineResult(records=records, stats=stats)
 
