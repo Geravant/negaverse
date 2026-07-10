@@ -13,6 +13,22 @@ from ..graph import TypedInteractionGraph
 
 _C = {"positive": "#2a9d8f", "random": "#adb5bd", "hard": "#e76f51"}
 
+# plain-language names for a non-specialist audience
+_NAME = {"positive": "real interactions", "random": "random non-pairs",
+         "hard": "our chosen non-pairs"}
+# provenance flags -> plain phrases
+_FLAG = {
+    "different_compartment": "different part of the cell (can't meet)",
+    "near_boundary": "sits close to real interactions",
+    "suspected_false_negative": "risky — might really interact",
+    "easy_negative": "clearly unrelated (easy)",
+    "no_shared_neighbors_low_expected_edge": "no shared partners in the network",
+}
+
+
+def _flag_label(f: str) -> str:
+    return _FLAG.get(f, f.replace("_", " "))
+
 
 # --- structural measures ------------------------------------------------
 def _common_neighbors(g: nx.Graph, pairs) -> np.ndarray:
@@ -52,10 +68,10 @@ def plot_separability(graph: TypedInteractionGraph, positives, random_neg, hard_
         cn = np.clip(_common_neighbors(g, pairs), 0, clip)
         bins = np.arange(0, clip + 2) - 0.5
         ax1.hist(cn, bins=bins, density=True, histtype="step", linewidth=2,
-                 color=_C[name], label=f"{name} (n={len(pairs)})")
-    ax1.set_xlabel(f"common neighbours (clipped at {clip})")
-    ax1.set_ylabel("density")
-    ax1.set_title("Common-neighbour overlap")
+                 color=_C[name], label=f"{_NAME[name]} (n={len(pairs)})")
+    ax1.set_xlabel("number of shared partner proteins")
+    ax1.set_ylabel("share of pairs")
+    ax1.set_title("How many partners the two proteins share")
     ax1.legend()
 
     # panel 2: shortest-path length distribution (proportions)
@@ -67,15 +83,15 @@ def plot_separability(graph: TypedInteractionGraph, positives, random_neg, hard_
         sp = _shortest_paths(g, pairs)
         counts = np.array([(sp == d).mean() for d in range(1, 8)])
         ax2.bar(np.arange(7) + offsets[name], counts, width=width,
-                color=_C[name], label=name)
+                color=_C[name], label=_NAME[name])
     ax2.set_xticks(np.arange(7))
     ax2.set_xticklabels(labels)
-    ax2.set_xlabel("shortest-path length in the PPI graph")
-    ax2.set_ylabel("proportion of pairs")
-    ax2.set_title("Graph distance to the interaction network")
+    ax2.set_xlabel("steps apart in the interaction network")
+    ax2.set_ylabel("share of pairs")
+    ax2.set_title("How far apart the two proteins are")
     ax2.legend()
 
-    fig.suptitle("Separability: negaverse hard negatives vs random (positives = reference)",
+    fig.suptitle("Our chosen non-pairs look more like real interactions than random ones do",
                  fontsize=12)
     fig.tight_layout(rect=(0, 0, 1, 0.96))
     out_path = Path(out_path)
@@ -92,11 +108,11 @@ def plot_funnel(stats: dict, out_path: str | Path) -> Path:
     gated = stats.get("gated_reviewed", 0)
     emitted = sum(stats.get("emitted", {}).values())
     stages = [
-        ("candidates", cand),
-        ("survived VETO", cand - vetoed),
-        ("scored (GRADED)", scored),
-        ("reviewed (GATED)", gated),
-        ("emitted", emitted),
+        ("candidate pairs", cand),
+        ("kept after quick reject", cand - vetoed),
+        ("scored", scored),
+        ("AI-reviewed", gated),
+        ("final non-pairs kept", emitted),
     ]
     labels = [s for s, _ in stages]
     values = [v for _, v in stages]
@@ -108,8 +124,8 @@ def plot_funnel(stats: dict, out_path: str | Path) -> Path:
         ax.text(v, yi, f"  {v:,}", va="center", fontsize=10)
     ax.set_yticks(y)
     ax.set_yticklabels(labels)
-    ax.set_xlabel("pairs")
-    ax.set_title("Hourglass funnel — pairs kept per stage")
+    ax.set_xlabel("number of pairs")
+    ax.set_title("How pairs were filtered, step by step")
     ax.margins(x=0.15)
     fig.tight_layout()
     out_path = Path(out_path)
@@ -148,13 +164,14 @@ def plot_confidence_hardness(records, out_path: str | Path) -> Path:
     (risky) tail is the low-confidence corner — the pairs that look positive-like."""
     import matplotlib.pyplot as plt
     groups = {
-        "eval (matched, safe)": ([], "#457b9d", 0.5),
-        "train (hard)": ([], "#e9c46a", 0.6),
-        "risky (suspected FN)": ([], "#e63946", 0.9),
+        "benchmark set (confident)": ([], "#457b9d", 0.5),
+        "training set (challenging)": ([], "#e9c46a", 0.6),
+        "risky — may really interact": ([], "#e63946", 0.9),
     }
     for r in records:
-        key = ("risky (suspected FN)" if _is_risky(r)
-               else "train (hard)" if r.mode == "train" else "eval (matched, safe)")
+        key = ("risky — may really interact" if _is_risky(r)
+               else "training set (challenging)" if r.mode == "train"
+               else "benchmark set (confident)")
         groups[key][0].append((r.confidence, r.hardness))
     fig, ax = plt.subplots(figsize=(7.4, 5.2))
     for name, (pts, col, a) in groups.items():
@@ -162,9 +179,9 @@ def plot_confidence_hardness(records, out_path: str | Path) -> Path:
             continue
         xs, ys = zip(*pts)
         ax.scatter(xs, ys, s=16, alpha=a, color=col, label=f"{name} (n={len(pts)})")
-    ax.set_xlabel("confidence  (that the pair is a true non-interaction)")
-    ax.set_ylabel("hardness  (topological distance-to-positive percentile)")
-    ax.set_title("Negative regimes: confidence × hardness")
+    ax.set_xlabel("how sure we are they DON'T interact  →")
+    ax.set_ylabel("how much it still looks like a real interaction  →")
+    ax.set_title("How confident, and how real-looking, each non-pair is")
     ax.legend(loc="lower left", fontsize=9)
     fig.tight_layout()
     out_path = Path(out_path); fig.savefig(out_path, dpi=130); plt.close(fig)
@@ -178,15 +195,16 @@ def plot_flag_breakdown(records, out_path: str | Path) -> Path:
     from collections import Counter
     c = Counter(f for r in records for f in r.flags)
     if not c:
-        c = Counter({"(no flags)": len(records)})
+        c = Counter({"(no notes)": len(records)})
     labels, vals = zip(*c.most_common())
-    fig, ax = plt.subplots(figsize=(8, max(2.4, 0.5 * len(labels) + 1)))
+    labels = [_flag_label(l) for l in labels]
+    fig, ax = plt.subplots(figsize=(8.5, max(2.4, 0.55 * len(labels) + 1)))
     y = np.arange(len(labels))[::-1]
     ax.barh(y, vals, color="#2a9d8f", height=0.6)
     for yi, v in zip(y, vals):
         ax.text(v, yi, f"  {v}", va="center", fontsize=10)
     ax.set_yticks(y); ax.set_yticklabels(labels)
-    ax.set_xlabel("emitted negatives"); ax.set_title("Flag breakdown (provenance)")
+    ax.set_xlabel("number of pairs"); ax.set_title("Why each pair was labelled the way it was")
     ax.margins(x=0.15); fig.tight_layout()
     out_path = Path(out_path); fig.savefig(out_path, dpi=130); plt.close(fig)
     return out_path
@@ -208,15 +226,15 @@ def plot_manifold(graph: TypedInteractionGraph, records, out_path: str | Path,
     hard = [(r.u, r.v) for r in records if r.mode == "train" and not _is_risky(r)]
     risky = [(r.u, r.v) for r in records if _is_risky(r)]
     rand = _random_nonedges(graph, n_ref, seed)
-    cats = [("positive", edges, "#2a9d8f", 0.5),
-            ("random neg", rand, "#adb5bd", 0.5),
-            ("hard neg", hard, "#e9c46a", 0.7),
-            ("risky neg", risky, "#e63946", 0.9)]
+    cats = [("real interactions", edges, "#2a9d8f", 0.5),
+            ("random non-pairs", rand, "#adb5bd", 0.5),
+            ("our chosen non-pairs", hard, "#e9c46a", 0.7),
+            ("risky — may interact", risky, "#e63946", 0.9)]
     cats = [(n, p, c, a) for n, p, c, a in cats if p]
     allp = [pr for _, p, _, _ in cats for pr in p]
-    # topology features are non-negative counts with hub-driven heavy tails
-    # (degree, pref-attachment) — log-compress before standardizing so a few
-    # hubs don't dominate the projection.
+    # network measures are non-negative counts with hub-driven heavy tails
+    # (degree, preferential attachment) — log-compress before standardizing so a
+    # few hubs don't dominate the layout.
     X = np.log1p(_features(adj, allp))
     Xz = (X - X.mean(0)) / (X.std(0) + 1e-9)
     xy = PCA(2, random_state=seed).fit_transform(Xz)
@@ -227,8 +245,10 @@ def plot_manifold(graph: TypedInteractionGraph, records, out_path: str | Path,
         ax.scatter(xy[i:j, 0], xy[i:j, 1], s=14, alpha=a, color=col,
                    label=f"{name} (n={len(p)})")
         i = j
-    ax.set_xlabel("PC1 (topology features)"); ax.set_ylabel("PC2")
-    ax.set_title("Manifold: positives vs random / hard / risky negatives")
+    ax.set_xlabel("each dot is a protein pair — similar pairs sit near each other")
+    ax.set_ylabel("")
+    ax.set_xticks([]); ax.set_yticks([])
+    ax.set_title("Map of protein pairs")
     ax.legend(loc="best", fontsize=9)
     fig.tight_layout()
     out_path = Path(out_path); fig.savefig(out_path, dpi=130); plt.close(fig)
