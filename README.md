@@ -60,18 +60,6 @@ Every pair that comes out carries its scores, flags, and a plain reason — noth
 
 ---
 
-## The honest headline finding
-
-We tested our own claim, hard — and the benchmark told us the truth (full details in [`docs/BENCHMARK-FINDINGS.md`](docs/BENCHMARK-FINDINGS.md)):
-
-1. **The naive "clever network trick" is misleading.** Picking hard negatives purely from network shape *looks* great, but it's grading its own homework — under a fair test it actually does **worse than random**.
-2. **Independent biology is the fix.** When we keep only the hard negatives that biology *also* confirms (the two proteins live in different cell compartments, so they can't physically meet), quality jumps back up — recovering ~55% of the gap in one step.
-3. **The path forward is clear:** stack more independent biology signals (protein chemistry, protein-language-model structure, function) to push past random. We now have a measured gradient to climb, not just a hope.
-
-That's the real value: a tool that is honest about what works, and a concrete direction that does.
-
----
-
 ## Quick start
 
 ```bash
