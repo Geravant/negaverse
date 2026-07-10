@@ -45,6 +45,11 @@ class PipelineConfig:
     # "entropy" = weight each stream by how decisive it is (IG Ch4, ig/).
     fusion_mode: str = "mean"
     fusion_lam: float = 1.0              # entropy sharpness; 0 == "mean"
+    # route pairs where two independent graph views (topology vs manifold) disagree
+    # by at least this margin to the GATED review — that's where the manifold's
+    # unique signal lives (docs/IG-FEATURES.md §3c). 0 disables. No effect unless
+    # both filters are active.
+    disagree_route_thresh: float = 0.25
 
 
 @dataclass
@@ -150,6 +155,14 @@ def run_pipeline(
     eval_keys = {(s.u, s.v) for s in eval_set}
     train_set = hard_train(kept, cfg.n_train, exclude=eval_keys)
 
+    # topology vs manifold disagreement: two independent graph views conflicting is
+    # worth the expensive review even when the fused confidence looks unremarkable
+    # — the manifold's unique signal lives where it disagrees with topology
+    # (docs/IG-FEATURES.md §3c). Flag such pairs and route them to the GATED tail.
+    disagree_keys = _disagreement_keys(eval_set + train_set, cfg.disagree_route_thresh)
+    for k in disagree_keys:
+        graded_flags.setdefault(k, []).append("topology_manifold_disagreement")
+
     # --- GATED pass (funnel): run expensive filters only on the contested tail
     # of the *emitted* set, so the LLM verdict is fused into pairs we actually
     # ship (not arbitrary pool pairs that get dropped by matching). ---
@@ -157,7 +170,8 @@ def run_pipeline(
     gated_flags: dict[tuple[str, str], list[str]] = {}
     gated_evidence: dict[tuple[str, str], dict] = {}
     if gated_f:
-        contested = _contested(eval_set + train_set, cfg.false_negative_pct, cfg.gated_max)
+        contested = _contested(eval_set + train_set, cfg.false_negative_pct,
+                               cfg.gated_max, disagree_keys)
         for s in contested:
             reviewed = merged = False
             for f in gated_f:
@@ -209,10 +223,28 @@ def run_pipeline(
     return PipelineResult(records=records, stats=stats)
 
 
-def _contested(kept: list[Scored], pct: float, gated_max: int | None) -> list[Scored]:
-    """Near-boundary (high hardness) or lowest-confidence pairs — the tail worth
-    the expensive gated review. Capped at gated_max (lowest-confidence first)."""
-    out = [s for s in kept if s.hardness >= 0.9]
+def _disagreement_keys(scored: list[Scored], thresh: float) -> set[tuple[str, str]]:
+    """Pairs where the two independent graph views (topology vs manifold) differ
+    by at least `thresh`. Empty unless both sub-scores are present (manifold is
+    opt-in) and thresh > 0."""
+    keys: set[tuple[str, str]] = set()
+    if not thresh or thresh <= 0:
+        return keys
+    for s in scored:
+        t, m = s.sub_scores.get("topology"), s.sub_scores.get("manifold")
+        if t is not None and m is not None and abs(t - m) >= thresh:
+            keys.add((s.u, s.v))
+    return keys
+
+
+def _contested(kept: list[Scored], pct: float, gated_max: int | None,
+               disagree_keys: set[tuple[str, str]] | None = None) -> list[Scored]:
+    """The tail worth the expensive gated review: near-boundary (high hardness),
+    lowest-confidence, or topology-vs-manifold disagreement pairs. Capped at
+    gated_max, prioritising disagreement / near-boundary so the cap can't drop
+    them for a merely-low-confidence pair."""
+    disagree_keys = disagree_keys or set()
+    out = [s for s in kept if s.hardness >= 0.9 or (s.u, s.v) in disagree_keys]
     if pct > 0 and kept:
         thresh = float(np.quantile([s.confidence for s in kept], pct))
         out += [s for s in kept if s.confidence <= thresh]
@@ -221,7 +253,9 @@ def _contested(kept: list[Scored], pct: float, gated_max: int | None) -> list[Sc
         if (s.u, s.v) not in seen:
             seen.add((s.u, s.v))
             uniq.append(s)
-    uniq.sort(key=lambda s: s.confidence)      # most contested (lowest conf) first
+    # disagreement / near-boundary first, then most contested (lowest confidence)
+    uniq.sort(key=lambda s: (0 if ((s.u, s.v) in disagree_keys or s.hardness >= 0.9)
+                             else 1, s.confidence))
     if gated_max is not None:
         uniq = uniq[:gated_max]
     return uniq

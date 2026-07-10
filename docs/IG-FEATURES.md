@@ -28,7 +28,7 @@ set. Several features below therefore become two gates, one per product.
 |---|---|---|---|
 | Ch4 Entropy-weighted fusion | Per-candidate stream weights: trust the decisive stream | `ig/entropy_fusion.py`, wired into `pipeline.py` (`fusion_mode="entropy"`) | **Strong — but only with stream-reported confidence.** Scalar proxy backfires. |
 | Ch5 Determinantal (DPP) selection | Diverse eval/train set curation | `ig/dpp.py` | **Modest on real embeddings; removes the worst near-duplicates.** |
-| Ch1 Surprisal vs a frozen cloud | Resemblance to gold negatives (safe) / to the positive manifold (suspected FN) | `ig/surprisal.py` | **Gold-cloud = null (0.47). Positive-manifold = real & leak-checked (0.88), complementary to topology → fused 0.90.** |
+| Ch1 Surprisal vs a frozen cloud | Resemblance to the positive manifold — over graph *and* sequence (ESM2) feature spaces | `ig/surprisal.py`, `scripts/eval_esm2_manifold.py` | **Gold-cloud = null (0.47). Graph manifold real (0.88). ESM2 sequence manifold is the *independent* axis (corr ~0.2) → 3-way fusion 0.81→0.88.** |
 | Ch7 Geometric routing (relative margin) | Margin between positive-like and negative-like clouds, not an absolute cutoff | `ig/margin.py` | Component of C's relative-margin score (0.95). |
 | Ch6 Recurrence / Hawkes | Corroboration: confidence = independent streams that echo the verdict | (design; uses `stream_disagreement`) | Precondition (stream independence) holds in negaverse. |
 | Ch2 Canonicalization / medoid | Dedup near-identical candidate negatives (paralogs, same complex) | (design) | Subsumed by DPP's diversity term. |
@@ -155,6 +155,78 @@ replacement for the hardness axis. Skip the gold-negative and topological-featur
 variants. (The 0.902 above is a plain z-score average; a fitted or reported-
 confidence fusion should do better still — ties back to feature 1.)
 
+#### 3b. The sequence (ESM2) manifold is the genuinely *independent* axis
+
+The graph-spectral surprisal correlated 0.64 with topology because both are built
+from the same graph. The predicted improvement was a manifold on a *different*
+feature space — a protein's **sequence** (ESM2) rather than its interaction
+partners. Tested on the **DRYAD PPI** benchmark (which ships sequences +
+precomputed ESM2-t6 embeddings + matched positive/negative controls), same
+leakage-free surprisal recipe, via [`scripts/eval_esm2_manifold.py`](../scripts/eval_esm2_manifold.py)
+(→ `out/esm2_manifold_eval.json`), stable over 4 seeds:
+
+| axis | single-axis AUROC | source |
+|---|---|---|
+| ESM2 **sequence** manifold | 0.75 | pretrained ESM2-t6 (320-d) |
+| spectral **graph** manifold | 0.81 | SVD of train positives |
+| negaverse topology risk | 0.81 | L3/RA, local |
+
+| axis pair | correlation |
+|---|---|
+| spectral ~ topology | **+0.70** (redundant — same graph) |
+| **ESM2 ~ spectral** | **+0.20** (nearly independent) |
+| **ESM2 ~ topology** | **+0.17** (nearly independent) |
+
+| fusion (z-score average) | AUROC |
+|---|---|
+| ESM2 + spectral | **0.865** |
+| ESM2 + spectral + topology | **0.881** |
+
+**Findings:**
+1. ESM2 alone is *weaker* than the graph arm on DRYAD (0.75 vs 0.81) — expected,
+   since DRYAD is graph-sparse and this is the *smallest* ESM2 (8 M params); a
+   larger ESM2 (t33, 1280-d) would raise the sequence floor.
+2. But ESM2 is **genuinely orthogonal** — correlation ~0.2 with both graph axes,
+   versus 0.70 between the two graph axes. It carries the independent signal the
+   graph-derived streams cannot.
+3. So **fusion pays off far more than before**: best single axis 0.81 → **0.88**
+   combined (+6–7 points, vs the +1.6 from fusing the two correlated graph axes on
+   HuRI). This is the "three independent lenses" thesis confirmed with numbers:
+   network (topology) + relational (spectral) + molecular (ESM2).
+4. **Representation is operator-specific:** ESM2 pairs want `concat`(min,max) or
+   `avg` (0.74–0.76); `hadamard` *destroys* the dense semantic vector (0.61) —
+   the opposite of the graph manifold, where Hadamard won. Match the operator to
+   the space.
+
+**Action:** ESM2-manifold surprisal is the highest-value new stream — it is the
+independent axis. On sequence-rich modalities (PLI: ESM2 for protein, MolFormer
+for ligand) it should matter even more. Fuse all three; don't pick one.
+
+#### 3c. Is the `suspected_false_negative` flag valid? (independent check)
+
+The `ManifoldSurprisalFilter` (`streams/manifold.py`) ships the flag first. To
+trust it we graded it against an *independent* yardstick — real interactions it
+never saw. Split HuRI positives train/held-out; fit the manifold on train only;
+the held-out edges are **hidden positives** (a negative-generator that emits one
+has made a false negative). Ask whether the flag catches them, via
+[`scripts/eval_manifold_flags.py`](../scripts/eval_manifold_flags.py):
+
+| question | result |
+|---|---|
+| flag signal separates hidden positives from clean negatives | AUROC **0.896**, flag **12×** more likely on a hidden positive |
+| topology alone, same task (baseline) | AUROC **0.930** |
+| manifold on pairs topology calls *safe* (its blind spot) | AUROC **0.68** |
+| eval-set cleanliness (5% contamination) | flag halves it (460 → 250 hidden) at a ~4% clean-flag cost |
+
+**Findings:** the flag is **valid** — it genuinely catches hidden false negatives,
+measured against biology it never saw (not the circular trap). But it does **not
+beat topology alone** (0.896 < 0.930); topology already does this job. Its real
+contribution is **complementary**: in topology's blind spot it still finds hidden
+positives at 0.68. So the manifold's unique value lives exactly where it
+*disagrees* with topology — which is the evidence-backed case for using it as a
+second flag layered on topology, and for routing topology-vs-manifold
+disagreements to the gated review, rather than as a standalone signal.
+
 ### 4. Relative-margin gating (Ch7) — `ig/margin.py`
 
 **Idea.** When two exemplar clouds overlap, an absolute threshold fails; gate on
@@ -207,16 +279,21 @@ or `local-docs/mappings` are absent (see the README for how to fetch them).
    literature populate `evidence["confidence"]`; then flip `fusion_mode=
    "entropy"`. (A: 0.81 → 0.94 with reported confidence; the scalar proxy alone
    is not safe.)
-2. **Spectral-manifold surprisal as a *complementary* GRADED stream.** Register a
-   filter scoring resemblance to the positive manifold (spectral node embeddings,
-   Hadamard, k≈10) → low confidence + `suspected_false_negative`. It does *not*
-   replace topology (both ≈0.885 leakage-free) but **fuses** with it for a real
-   lift (0.885 → 0.902; correlation only +0.64). Skip the gold-negative and
-   topological-feature variants — evidence says they carry no (or inverted)
-   signal.
+2. **Manifold surprisal as GRADED streams — sequence first.** Two axes:
+   (a) **ESM2 sequence manifold** (`concat`/`avg` operator) — the *independent*
+   one (corr ~0.2 with the graph), the biggest fusion lift, and the natural fit
+   for sequence-rich PLI (ESM2 + MolFormer). (b) **spectral graph manifold**
+   (Hadamard) — complementary to topology but partly redundant (corr 0.64). Fuse
+   all three (topology + spectral + ESM2): DRYAD 0.81 → 0.88. Skip the
+   gold-negative and raw-topological-feature variants.
 3. **DPP for the train set.** Swap `hard_train`'s top-k for `greedy_map_dpp` over
    pair-embeddings; keep top-k for eval until the quality/diversity trade is
    tuned. (B: removes the 0.998-cosine duplicates.)
-4. **Entropy-driven GATED routing.** Route pairs to the LLM by
-   `stream_disagreement` (independent streams split), not just low fused
-   confidence — spends the scarce LLM budget where geometry can't decide.
+4. **Disagreement-driven GATED routing — DONE.** Pairs where topology and the
+   manifold disagree by ≥ `PipelineConfig.disagree_route_thresh` are flagged
+   `topology_manifold_disagreement` and routed to the gated review (prioritised
+   within the cap), not just the low-confidence tail — spending the scarce LLM
+   budget where the two independent graph views conflict, which §3c showed is
+   where the manifold's unique signal lives. Verified end-to-end on HuRI (the
+   flagged pairs are topology-says-safe / manifold-says-risky). See
+   `pipeline._disagreement_keys`, `tests/test_routing.py`.

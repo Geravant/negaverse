@@ -34,6 +34,10 @@ class Filter(ABC):
     stage: Stage = Stage.GRADED
     #: interaction types this filter applies to
     modalities: frozenset = frozenset({"ppi", "pli"})
+    #: whether the pipeline includes this filter in the default selection for its
+    #: modality. Set False for heavier / experimental filters that must be opted
+    #: into by name (they stay registered and buildable — see build_filters).
+    default: bool = True
 
     def fit(self, graph: TypedInteractionGraph) -> None:
         """Optional: precompute over the graph before scoring."""
