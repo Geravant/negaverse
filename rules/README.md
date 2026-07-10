@@ -9,6 +9,10 @@ real and lets the biology side (rules) evolve independently of the engine.
 - **Writing a rule from a paper:** the `rule-from-literature` Claude skill
   (`.claude/skills/rule-from-literature/`) — give it a PDF/URL/abstract and it
   drafts, validates, and appends the rule.
+- **Registering an external positive-interaction database** (for the
+  known-positive veto, not the rule engine): [`SOURCES.md`](SOURCES.md) /
+  `sources.yaml` — a different mechanism from the rules below; see that doc
+  for why.
 
 One consumer, two uses:
 - **Deterministic filters** evaluate the machine-checkable `when` condition

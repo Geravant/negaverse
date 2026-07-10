@@ -1,0 +1,11 @@
+# External known-positive interaction sources, fed to KnownPositiveVeto
+# (negaverse/streams/structured.py). See SOURCES.md for the field contract.
+#
+# Different mechanism from ppi.yaml/pli.yaml: a rule *scores* how plausible a
+# non-edge is; an entry here is a plain lookup table of pairs documented as
+# interacting somewhere, even if absent from whatever graph the pipeline is
+# currently loading. A candidate matching any pair in any listed source is
+# vetoed outright, same as a positive edge already in the graph.
+#
+# Empty for now — no external positive database is wired in yet. Add an entry
+# here (see SOURCES.md) once you have one.
