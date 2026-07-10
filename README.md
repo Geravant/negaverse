@@ -50,6 +50,7 @@ Every pair that comes out carries its scores, flags, and a plain reason — noth
 |---|---|---|
 | **Pipeline** | The full hourglass: quick-reject → score → AI-review → two output sets | ✅ works end-to-end |
 | **Network-shape check** | Judges a pair by how much it *looks like* a real interaction in the network | ✅ |
+| **Embedding-manifold view** | A second, *independent* graph view: places each protein by who it interacts with, then flags a pair that looks like the crowd of real interactions (a likely hidden positive). Where this view and the network-shape view **disagree**, the pair is sent to AI review. | ✅ (opt-in) |
 | **Biology rules** | Plain-English rules in a text file (`rules/*.yaml`) become checks with **no code** — e.g. co-localization ("different part of the cell ⇒ safe non-pair") | ✅ engine + co-localization live |
 | **AI literature review** | An LLM double-checks only the most uncertain pairs and returns a reasoned verdict | ✅ (on by default; skipped without an API key) |
 | **Known-interaction screening** | Removes any pair documented as interacting in outside databases (IntAct, BioGRID, …) | ✅ wired (needs the data files placed) |

@@ -23,6 +23,7 @@ _FLAG = {
     "suspected_false_negative": "risky — might really interact",
     "easy_negative": "clearly unrelated (easy)",
     "no_shared_neighbors_low_expected_edge": "no shared partners in the network",
+    "topology_manifold_disagreement": "the two graph views disagree → sent to review",
 }
 
 

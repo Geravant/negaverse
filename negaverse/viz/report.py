@@ -68,9 +68,13 @@ _PANELS = {
         "near-zero configuration-model expected-edge count (topology rule). "
         "<code>near_boundary</code> = hardness ≥ 0.90 (top-decile topological closeness to the "
         "positive manifold). "
-        "<code>suspected_false_negative</code> = bottom-quantile fused confidence — flagged for "
-        "review, not shipped as a confident negative. Full per-filter sub-scores + evidence are in "
-        "<code>out/negatives.jsonl</code>."),
+        "<code>suspected_false_negative</code> = bottom-quantile fused confidence, or the "
+        "<b>manifold</b> filter finds the pair as positive-like as a typical real edge in embedding "
+        "space — flagged for review, not shipped as a confident negative. "
+        "<code>topology_manifold_disagreement</code> = the two independent graph views (network "
+        "shape vs. embedding manifold) conflict on this pair, so it's routed to AI review — the "
+        "manifold's unique signal lives where it disagrees with topology. Full per-filter sub-scores "
+        "+ evidence are in <code>out/negatives.jsonl</code>."),
     "funnel.png": (
         "How pairs were filtered, step by step",
         "We start from many candidate pairs and narrow down. <b>Look for:</b> quick rejects first, "
