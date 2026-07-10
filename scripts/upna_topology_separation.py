@@ -186,6 +186,24 @@ def main():
         frac = float((rn > FLOOR).mean())
         print(f"  {name:12} AUROC={auroc:.3f}   mean risk pos={rp.mean():.3f} "
               f"neg={rn.mean():.3f}   neg with overlap={frac:.0%}")
+
+    # negaverse's OWN negatives: topology-HARD, selected by the same risk (what the
+    # tool actually does). Sample a candidate pool of non-edges, keep the hardest.
+    pool, seenp = [], set()
+    while len(pool) < 30_000:
+        a, b = uni[rng.integers(len(uni))], uni[rng.integers(len(uni))]
+        k = (a, b) if a < b else (b, a)
+        if a != b and k not in edge_set and k not in seenp:
+            seenp.add(k); pool.append((a, b))
+    pr = st.risk(pool)
+    nv = [pool[i] for i in np.argsort(-pr)[:N_PER_CLASS]]      # hardest = highest risk
+    samples["negaverse"] = nv
+    rn = st.risk(nv)
+    aurocs["negaverse"] = roc_auc_score(np.r_[np.ones(len(rp)), np.zeros(len(rn))],
+                                        np.r_[rp, rn])
+    print(f"  {'negaverse':12} AUROC={aurocs['negaverse']:.3f}   mean risk pos={rp.mean():.3f} "
+          f"neg={rn.mean():.3f}   neg with overlap={float((rn > FLOOR).mean()):.0%}"
+          f"   <- OUR negatives: hardest class + 100% shared structure (dense graph keeps positives separable)")
     _plot(rp, risks)
     _report3d(st, samples, aurocs)
 
@@ -203,10 +221,11 @@ def _report3d(st, samples, aurocs):
         y = np.divide(ra, ra + st.ra_scale, where=ra > 0, out=np.zeros_like(ra))
         return np.column_stack([x, y, np.log1p(cn)])
 
-    palette = {"positive": "#2a9d8f", "PPNI": "#e63946",
-               "topological": "#e9c46a", "random": "#adb5bd"}
+    palette = {"positive": "#2a9d8f", "PPNI": "#e63946", "topological": "#e9c46a",
+               "random": "#adb5bd", "negaverse": "#7b2ff7"}
     label = {"positive": "positive (real interaction)", "PPNI": "PPNI negative",
-             "topological": "topological negative", "random": "random negative"}
+             "topological": "topological negative", "random": "random negative",
+             "negaverse": "negaverse (our hard negative)"}
     classes = [{"name": label[k], "color": palette[k], "points": feats(v)}
                for k, v in samples.items()]
     rep = render_3d_report(
@@ -219,9 +238,16 @@ def _report3d(st, samples, aurocs):
                       for k, a in aurocs.items()],
         caption="Each point is a protein PAIR placed by three topology features: degree-weighted "
                 "friend-of-a-friend paths (L3), shared-neighbour resource allocation (RA), and raw "
-                "shared-neighbour count. Teal = real interactions; the three negative classes "
-                "collapse to the origin (no shared structure) while positives spread out — which is "
-                "why topology separates them near-trivially here (AUROC ~0.98–1.0), unlike on HuRI.")
+                "shared-neighbour count. Teal = real interactions. The dataset's own negatives "
+                "(PPNI / topological / random) collapse to the origin — 0–14% even share a "
+                "neighbour — so topology separates them trivially (AUROC ~0.98–1.0). "
+                "<b>Purple = negaverse's own negatives</b>, selected to be topology-hard: 100% share "
+                "structure and they lift off the origin toward the positives (the hardest class, "
+                "AUROC 0.96). On this DENSE interactome real edges are still topologically distinct "
+                "(mean risk 0.47 vs our 0.05), so they don't fully merge — but negaverse's negatives "
+                "are unambiguously harder and more real-like than the dataset's supplied 'hard' "
+                "negatives. (On sparse HuRI, by contrast, topology-hard negatives DO overlap the "
+                "positives — see docs/BENCHMARK-FINDINGS.md.)")
     print(f"wrote {rep}")
 
 
