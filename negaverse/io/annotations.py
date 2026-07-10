@@ -26,6 +26,10 @@ ANNOT_DIR = "local-docs/annotations"
 _SCALAR_FIELDS = {
     "surface_hydrophobicity": f"{ANNOT_DIR}/hydrophobicity.tsv",
 }
+# set-valued fields (node<TAB>comma-separated terms), same shape as localization.
+_SET_FIELDS = {
+    "processes": f"{ANNOT_DIR}/go_bp.tsv",       # GO biological_process (build_go_process.py)
+}
 
 
 def _load_scalar_tsv(path: str | Path) -> dict[str, float]:
@@ -46,13 +50,21 @@ def _load_scalar_tsv(path: str | Path) -> dict[str, float]:
 
 
 def build_annotation_table(localization_path: str | Path = LOC_PATH,
-                           scalar_fields: dict[str, str] | None = None) -> dict[str, dict]:
+                           scalar_fields: dict[str, str] | None = None,
+                           set_fields: dict[str, str] | None = None) -> dict[str, dict]:
     table: dict[str, dict] = {}
     try:
         for node, comps in load_localization_tsv(localization_path).items():
             table.setdefault(node, {})["compartments"] = comps
     except FileNotFoundError:
         pass                      # no localization data -> location rules abstain
+    # other set-valued fields (GO biological_process, …) — same TSV shape
+    for field, path in (set_fields or _SET_FIELDS).items():
+        try:
+            for node, terms in load_localization_tsv(path).items():
+                table.setdefault(node, {})[field] = terms
+        except FileNotFoundError:
+            pass                  # field not sourced -> rules that read it abstain
     for field, path in (scalar_fields or _SCALAR_FIELDS).items():
         try:
             for node, val in _load_scalar_tsv(path).items():

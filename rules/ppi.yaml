@@ -15,16 +15,37 @@
     interact, so a non-edge between them is a safe negative.
   source: "GO cellular_component"
 
-- id: hydrophobicity_interface
+- id: hydrophobicity_mismatch
   modality: ppi
   applies_to: [protein, protein]
-  when: "a.surface_hydrophobicity < 0.2 and b.surface_hydrophobicity < 0.2"
+  when: "a.surface_hydrophobicity - b.surface_hydrophobicity > 0.12 or b.surface_hydrophobicity - a.surface_hydrophobicity > 0.12"
   effect: safer_negative
-  weight: 0.4
+  weight: 0.3                         # deliberately low — weak signal (see below)
+  flag: hydrophobicity_mismatch
   rationale: >
-    Pairs with no complementary hydrophobic surface are less likely to form a
-    stable binding interface.
-  source: "TODO — source/threshold to confirm"
+    Interacting proteins tend to share biophysical context (both membrane-
+    associated or both soluble), so a large mismatch in mean surface
+    hydrophobicity makes a non-edge a somewhat safer negative. NOTE this is a
+    weak whole-protein proxy, not interface complementarity: on HuRI the mean
+    Kyte-Doolittle hydrophobicity separates real edges from non-edges at only
+    AUROC ~0.55 (dissimilarity direction). At |Δh|>0.12 non-edges are ~1.6x
+    enriched over edges — hence low weight. A proper interface-hydrophobicity
+    feature needs surface/patch-resolved data we don't yet have.
+  source: "Kyte-Doolittle mean (scripts/compute_hydrophobicity.py); threshold 0.12 calibrated on HuRI edge-vs-nonedge enrichment"
+
+- id: functional_process_mismatch
+  modality: ppi
+  applies_to: [protein, protein]
+  when: "disjoint(a.processes, b.processes)"
+  effect: safer_negative
+  weight: 0.5                         # calibrated on HuRI (see build_go_process.py)
+  flag: different_process
+  rationale: >
+    Two proteins annotated to entirely non-overlapping GO biological processes
+    are less likely to be functional interaction partners, so a non-edge between
+    them is a safer negative. Independent of both graph topology and subcellular
+    localization (GO biological_process, not cellular_component).
+  source: "GO biological_process (scripts/build_go_process.py)"
 
 - id: no_shared_neighbors_low_expected_edge
   modality: ppi

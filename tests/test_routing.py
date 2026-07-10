@@ -42,8 +42,10 @@ def test_contested_prioritises_disagreement_within_cap():
     # a low-confidence pair that does NOT disagree vs a mid-confidence one that does
     pool = [_s("x", "y", 0.5, 0.5, conf=0.01),                # lowest conf, agrees
             _s("a", "b", 0.9, 0.2, conf=0.60)]                # disagrees
-    picked = _contested(pool, pct=0.5, gated_max=1, disagree_keys={("a", "b")})
-    assert [(s.u, s.v) for s in picked] == [("a", "b")]       # disagreement wins the 1 slot
+    # _contested now returns the full priority-sorted tail (caller applies the cap);
+    # the disagreement pair must sort first so it survives a cap of 1.
+    picked = _contested(pool, pct=0.5, disagree_keys={("a", "b")})
+    assert (picked[0].u, picked[0].v) == ("a", "b")           # disagreement wins the 1 slot
 
 
 # --- integration: end-to-end through the pipeline ----------------------

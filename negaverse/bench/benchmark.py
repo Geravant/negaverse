@@ -111,12 +111,15 @@ class BenchmarkResult:
         lines = [f"positives={self.n_positives}  test_pairs={2 * self.n_test}  "
                  f"features={self.feature_set}  test_neg={self.test_neg_source}"]
         for s, m in self.strategies.items():
-            lines.append(f"  {s:<10} AUROC={m['auroc']:.4f}  AUPRC={m['auprc']:.4f}  "
+            lines.append(f"  {s:<14} AUROC={m['auroc']:.4f}  AUPRC={m['auprc']:.4f}  "
                          f"(train_neg={m['n_train_neg']})")
-        r, nv = self.strategies.get("random"), self.strategies.get("negaverse")
-        if r and nv:
-            lines.append(f"  Δ negaverse-random: AUROC {nv['auroc'] - r['auroc']:+.4f}  "
-                         f"AUPRC {nv['auprc'] - r['auprc']:+.4f}")
+        r = self.strategies.get("random")
+        if r:
+            for s, m in self.strategies.items():
+                if s == "random":
+                    continue
+                lines.append(f"  Δ {s}-random: AUROC {m['auroc'] - r['auroc']:+.4f}  "
+                             f"AUPRC {m['auprc'] - r['auprc']:+.4f}")
         return "\n".join(lines)
 
 
@@ -146,6 +149,25 @@ def _negaverse_bio_negatives(graph, train_pos, node_type, n, seed, max_pool):
     bio = [(r.u, r.v) for r in res.records
            if r.mode == "train" and "different_compartment" in r.flags]
     return bio[:n]
+
+
+def _negaverse_stacked_negatives(graph, train_pos, node_type, n, seed, max_pool,
+                                 filters=("known_positive_veto", "structured", "topology", "rules")):
+    """Topology-hard negatives ranked by the FUSED independent-biology confidence
+    (co-localization + hydrophobicity + function + structured + any wired manifold),
+    keeping the pairs the combined signals most agree are true negatives. This
+    generalizes negaverse_bio from a single co-localization flag to the fusion of
+    every available independent signal — so it measures the stack, not one filter.
+    Over-samples the hard tail, then keeps the n highest-confidence pairs."""
+    tg = TypedInteractionGraph.from_edges(
+        train_pos, dict(node_type), admissible_types=[("protein", "protein")],
+        name="bench-train")
+    cfg = PipelineConfig(modality="ppi", n_eval=0, n_train=max(4 * n, n), max_pool=max_pool,
+                         seed=seed, filters=list(filters))
+    res = run_pipeline(tg, cfg)
+    hard = [r for r in res.records if r.mode == "train"]
+    hard.sort(key=lambda r: r.confidence, reverse=True)   # biology most-confident safe negatives
+    return [(r.u, r.v) for r in hard[:n]]
 
 
 def run_benchmark(graph: TypedInteractionGraph, seed: int = 0, test_frac: float = 0.2,
@@ -215,6 +237,9 @@ def run_benchmark(graph: TypedInteractionGraph, seed: int = 0, test_frac: float 
         elif strat == "negaverse_bio":
             train_neg = _negaverse_bio_negatives(graph, train_pos, node_type,
                                                  len(train_pos), seed, max_pool)
+        elif strat == "negaverse_stacked":
+            train_neg = _negaverse_stacked_negatives(graph, train_pos, node_type,
+                                                     len(train_pos), seed, max_pool)
         else:
             train_neg = _random_nonedges(nodes, pos_set, len(train_pos), rng, exclude=test_excl)
         if not train_neg:

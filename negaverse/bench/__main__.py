@@ -23,6 +23,11 @@ def main(argv=None) -> None:
     ap.add_argument("--gold-test-neg", action="store_true",
                     help="use Negatome gold non-interactions (mapped into HuRI space) "
                          "as the test negatives instead of easy random pairs")
+    ap.add_argument("--strategy", nargs="+", default=["random", "negaverse"],
+                    choices=["random", "negaverse", "negaverse_bio", "negaverse_stacked"],
+                    help="which negative-selection strategies to benchmark (random is the "
+                         "baseline; negaverse_bio adds co-localization vetting; "
+                         "negaverse_stacked fuses every independent signal)")
     args = ap.parse_args(argv)
 
     print("Loading HuRI ...")
@@ -44,7 +49,7 @@ def main(argv=None) -> None:
     result = run_benchmark(
         graph, seed=args.seed, test_frac=args.test_frac,
         max_positives=args.max_positives or None, max_pool=args.max_pool,
-        feature_set=args.features, gold_test_neg=gold)
+        feature_set=args.features, gold_test_neg=gold, strategies=tuple(args.strategy))
     print("\n=== benchmark ===")
     print(result.summary())
 
