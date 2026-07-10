@@ -242,6 +242,27 @@ def _plot(cos, y, m, X, yk, aurocs):
     fig.savefig(p, dpi=130); plt.close(fig)
     print(f"\nwrote {p}")
 
+    # interactive 3D report — PCA-3 of the ESM2 pair-embeddings, coloured by label
+    from negaverse.viz.bench3d import render_3d_report
+    p3 = PCA(3, random_state=SEED).fit_transform(X)
+    classes = [{"name": "positive (interacting)", "color": "#2a9d8f", "points": p3[yk == 1]},
+               {"name": "negative (non-interacting)", "color": "#e63946", "points": p3[yk == 0]}]
+    rep = render_3d_report(
+        out / "dryad" / "report.html",
+        title="DRYAD — protein structure (ESM2) separation",
+        subtitle="Compound benchmark pair-list · ESM2-t6 mean-pooled embeddings · "
+                 "Hadamard pair vector",
+        classes=classes, axis_labels=("ESM2 PC1", "ESM2 PC2", "ESM2 PC3"),
+        summary_rows=[("ESM2 cosine (unsupervised)", f"AUROC {aurocs['cosine']:.3f}"),
+                      ("supervised 5-fold CV", f"AUROC {aurocs['cv']:.3f}"),
+                      ("supervised protein-disjoint (fair)", f"AUROC {aurocs['disjoint']:.3f}")],
+        caption="Each point is a protein PAIR, placed by the top-3 principal components of its "
+                "ESM2 Hadamard embedding. Teal = real interactions, red = non-interactions. "
+                "The clouds overlap heavily (structure alone separates at ~0.72 cosine / ~0.89 "
+                "supervised) — DRYAD is a labelled pair-list, so this is the structure view, not "
+                "a generated-negative dashboard.")
+    print(f"wrote {rep}")
+
 
 if __name__ == "__main__":
     main()

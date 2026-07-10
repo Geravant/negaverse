@@ -167,20 +167,62 @@ def main():
                 "topological": [p for p in topo_neg if p[0] in universe and p[1] in universe],
                 "random": rand}
 
-    rp = st.risk(_sample(test_pos, N_PER_CLASS, rng))
+    pos_sample = _sample(test_pos, N_PER_CLASS, rng)
+    rp = st.risk(pos_sample)
+    samples = {"positive": pos_sample}
     print(f"\nheld-out positives: mean risk {rp.mean():.3f}\n")
     print("=== topology separation: AUROC(positive vs negative) ===")
     print("  (0.50 = indistinguishable / hard; 1.0 = trivially separable)\n")
     risks = {}
+    aurocs = {}
     for name, negs in neg_sets.items():
-        rn = st.risk(_sample(negs, N_PER_CLASS, rng))
+        neg_sample = _sample(negs, N_PER_CLASS, rng)
+        samples[name] = neg_sample
+        rn = st.risk(neg_sample)
         risks[name] = rn
         y = np.r_[np.ones(len(rp)), np.zeros(len(rn))]
         auroc = roc_auc_score(y, np.r_[rp, rn])
+        aurocs[name] = auroc
         frac = float((rn > FLOOR).mean())
         print(f"  {name:12} AUROC={auroc:.3f}   mean risk pos={rp.mean():.3f} "
               f"neg={rn.mean():.3f}   neg with overlap={frac:.0%}")
     _plot(rp, risks)
+    _report3d(st, samples, aurocs)
+
+
+def _report3d(st, samples, aurocs):
+    """Interactive 3D map: each pair placed by its (L3, RA, shared-neighbour)
+    topology features, coloured by class. Positives spread up/right; the three
+    negative sets collapse toward the origin — the separation story, rotatable."""
+    from pathlib import Path
+    from negaverse.viz.bench3d import render_3d_report
+
+    def feats(pairs):
+        l3, ra, cn = st._raw(pairs)
+        x = np.divide(l3, l3 + st.l3_scale, where=l3 > 0, out=np.zeros_like(l3))
+        y = np.divide(ra, ra + st.ra_scale, where=ra > 0, out=np.zeros_like(ra))
+        return np.column_stack([x, y, np.log1p(cn)])
+
+    palette = {"positive": "#2a9d8f", "PPNI": "#e63946",
+               "topological": "#e9c46a", "random": "#adb5bd"}
+    label = {"positive": "positive (real interaction)", "PPNI": "PPNI negative",
+             "topological": "topological negative", "random": "random negative"}
+    classes = [{"name": label[k], "color": palette[k], "points": feats(v)}
+               for k, v in samples.items()]
+    rep = render_3d_report(
+        Path("out") / "upna" / "report.html",
+        title="UPNA-PPI — network-topology separation",
+        subtitle="Full PPI interactome (~18k proteins, ~4.58M edges) · L3+RA+config risk",
+        classes=classes,
+        axis_labels=("L3 score (norm.)", "RA score (norm.)", "shared neighbours (log)"),
+        summary_rows=[(f"positive vs {k} negatives", f"AUROC {a:.3f}")
+                      for k, a in aurocs.items()],
+        caption="Each point is a protein PAIR placed by three topology features: degree-weighted "
+                "friend-of-a-friend paths (L3), shared-neighbour resource allocation (RA), and raw "
+                "shared-neighbour count. Teal = real interactions; the three negative classes "
+                "collapse to the origin (no shared structure) while positives spread out — which is "
+                "why topology separates them near-trivially here (AUROC ~0.98–1.0), unlike on HuRI.")
+    print(f"wrote {rep}")
 
 
 def _plot(rp, risks):
