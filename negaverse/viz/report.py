@@ -41,7 +41,9 @@ _PANELS = {
         "why a hard negative can sit close to positives yet still be told apart."),
     "manifold.png": (
         "Map of protein pairs",
-        "Every dot is a pair of proteins, placed so that similar pairs sit close together. "
+        "A <b>map</b>, like flattening a globe: many network measurements per pair are squeezed "
+        "into 2 axes, so what matters is <b>distance</b> — dots near each other are similar pairs, "
+        "and the axis numbers themselves have no units. "
         "<b>Look for:</b> the <span style='color:#2a9d8f'>real interacting pairs</span> form a "
         "cloud; <span style='color:#adb5bd'>random guesses</span> land far away (easy to tell "
         "apart); our <span style='color:#e9c46a'>selected non-pairs</span> sit near the real ones "

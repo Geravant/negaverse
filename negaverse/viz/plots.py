@@ -320,10 +320,9 @@ def plot_manifold(graph: TypedInteractionGraph, records, out_path: str | Path,
         ax.scatter(xy[i:j, 0], xy[i:j, 1], s=14, alpha=a, color=col,
                    label=f"{name} (n={len(p)})")
         i = j
-    ax.set_xlabel("each dot is a protein pair — similar pairs sit near each other")
-    ax.set_ylabel("")
-    ax.set_xticks([]); ax.set_yticks([])
-    ax.set_title("Map of protein pairs")
+    ax.set_xlabel("network-feature map — axis 1")
+    ax.set_ylabel("network-feature map — axis 2")
+    ax.set_title("Map of protein pairs (many network measures squeezed into 2D)")
     ax.legend(loc="best", fontsize=9)
     fig.tight_layout()
     out_path = Path(out_path); fig.savefig(out_path, dpi=130); plt.close(fig)
