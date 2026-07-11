@@ -64,12 +64,15 @@ from negaverse.streams.rules import RuleGradedFilter
 ARMS = ["random_raw", "random_veto", "topology_hard", "topology_safe", "stacked"]
 
 
-def _score_pool(train_pos, max_pool, seed, full_pos_set, exclude=None):
+def _score_pool(train_pos, max_pool, seed, full_pos_set, exclude=None, inject=None):
     """One frozen candidate pool, each pair scored ONCE, on the TRAIN graph only.
     `exclude` (held-out test-positive pairs, as frozensets) is removed from the
     candidate pool so a test positive can never be selected as a training negative.
-    The selector never sees a test edge — no leakage."""
+    `inject` (real hidden-positive pairs) are scored and added with injected=True and
+    veto BYPASSED — the injection backtest: simulated hidden positives the veto can't
+    see, so we can measure which selection arm wrongly picks them as negatives."""
     exclude = exclude or set()
+    inject = inject or []
     nodes = {p for e in train_pos for p in e}
     tg = TypedInteractionGraph.from_edges(
         list(train_pos), {n: "protein" for n in nodes},
@@ -82,23 +85,27 @@ def _score_pool(train_pos, max_pool, seed, full_pos_set, exclude=None):
     for f in [veto, structured, topology] + list(per_rule.values()):
         f.fit(tg)
 
-    cand = [(u, v) for (u, v) in generate_candidates(tg, max_pool=max_pool, seed=seed)
-            if frozenset((u, v)) not in exclude]
-    rows, risks = [], []
-    for (u, v) in cand:
-        vetoed = bool(veto.score(tg, u, v).veto)                # known positive (DB or graph)
-        s_val = structured.score(tg, u, v).value
-        t = topology.score(tg, u, v)
-        t_val, risk = t.value, float((t.evidence or {}).get("risk", 0.0))
-        rule_vals = {}                                          # rid -> (weight, value) for FIRED rules
+    deg = dict(tg.g.degree())                                   # train-graph degree, for counterfactual matching
+
+    def _score(u, v, injected):
+        vetoed = False if injected else bool(veto.score(tg, u, v).veto)
+        rule_vals = {}
         for r in _RULES:
             rs = per_rule[r.id].score(tg, u, v)
             if rs.value is not None:
                 rule_vals[r.id] = (r.weight, rs.value)
-        rows.append({"u": u, "v": v, "struct": s_val, "topo": t_val, "risk": risk,
-                     "rules": rule_vals, "vetoed": vetoed,
-                     "dirty": vetoed or (frozenset((u, v)) in full_pos_set)})
-        risks.append(risk)
+        t = topology.score(tg, u, v)
+        return {"u": u, "v": v, "struct": structured.score(tg, u, v).value,
+                "topo": t.value, "risk": float((t.evidence or {}).get("risk", 0.0)),
+                "rules": rule_vals, "vetoed": vetoed, "injected": injected,
+                "degsum": deg.get(u, 0) + deg.get(v, 0),
+                "dirty": vetoed or (frozenset((u, v)) in full_pos_set)}
+
+    cand = [(u, v) for (u, v) in generate_candidates(tg, max_pool=max_pool, seed=seed)
+            if frozenset((u, v)) not in exclude]
+    rows = [_score(u, v, False) for (u, v) in cand]
+    rows += [_score(u, v, True) for (u, v) in inject]
+    risks = [r["risk"] for r in rows]
     # hardness = percentile of topology risk across the pool (matches the pipeline)
     order = np.argsort(np.argsort(risks))
     for i, r in enumerate(rows):
@@ -185,6 +192,36 @@ def _select_mixture(pool, n, props, rng):
     return list(chosen.values())[:n]
 
 
+def _select_counterfactual(pool, pos_degsums, n, rng):
+    """Matched-counterfactual negatives (Tier 3): sample veto-clean non-edges whose
+    endpoint-degree sum MATCHES the training positives' distribution. This preserves
+    the degree/coverage nuisance that random over-samples toward isolated pairs — so
+    the negatives resemble positives on the shortcut but remain defensible non-edges."""
+    clean = [r for r in pool if not r["vetoed"]]
+    buckets: dict = {}
+    for r in clean:
+        buckets.setdefault(r["degsum"], []).append(r)
+    for b in buckets.values():
+        rng.shuffle(b)
+    keys = np.array(sorted(buckets))
+    if len(keys) == 0:
+        return []
+    out = []
+    targets = list(pos_degsums)
+    rng.shuffle(targets)
+    for d in targets:
+        if len(out) >= n:
+            break
+        k = keys[np.argmin(np.abs(keys - d))]                   # nearest available degsum bucket
+        while buckets.get(k) is not None and not buckets[k]:
+            keys = keys[keys != k]
+            if len(keys) == 0:
+                return [(r["u"], r["v"]) for r in out][:n]
+            k = keys[np.argmin(np.abs(keys - d))]
+        out.append(buckets[k].pop())
+    return [(r["u"], r["v"]) for r in out][:n]
+
+
 def _hits(y, s, k, positive=True):
     order = np.argsort(s)
     idx = order[-k:] if positive else order[:k]
@@ -243,6 +280,56 @@ def _load_dataset(name):
     raise ValueError(name)
 
 
+def _injection_backtest(all_pos, nodes, full_pos_set, args):
+    """Hidden-positive injection backtest (Tier 3). Inject K real interactions that
+    are absent from the training graph (veto-bypassed = truly hidden), then measure
+    what fraction each selection arm wrongly picks as a training negative. The claim
+    negaverse makes is that it avoids hidden positives; this tests it directly.
+    Lower `selected%` = better. Expectation: topology_hard picks the MOST (hidden
+    positives are positive-like ⇒ hard); safe/stacked/counterfactual pick fewer."""
+    arms = ["random_veto", "topology_hard", "topology_safe", "stacked", "counterfactual"]
+    rates = {a: [] for a in arms}
+    node_set = set(nodes)
+    print(f"INJECTION BACKTEST — inject K={args.inject_k} hidden positives (veto-bypassed), "
+          f"measure fraction each arm selects as a negative (lower = better)\n" + "=" * 92)
+    for seed in args.seeds:
+        rng = np.random.default_rng(seed)
+        pos = all_pos
+        if args.max_positives and len(pos) > args.max_positives:
+            pos = [pos[i] for i in rng.choice(len(pos), size=args.max_positives, replace=False)]
+        pos = [pos[i] for i in rng.permutation(len(pos))]
+        n_test = int(len(pos) * 0.2)
+        tr_pos = pos[n_test:]
+        tr_set = {frozenset(e) for e in tr_pos}
+        tr_nodes = {n for e in tr_pos for n in e}               # only nodes the train graph knows
+        # hidden positives: real edges NOT in the training graph, both endpoints in the train graph
+        held = [tuple(p) for p in full_pos_set
+                if p not in tr_set and set(p) <= tr_nodes and len(p) == 2]
+        rng.shuffle(held)
+        inject = held[:args.inject_k]
+        inj_keys = {frozenset(p) for p in inject}
+        pool = _score_pool(tr_pos, args.max_pool, seed, full_pos_set,
+                           exclude={frozenset(p) for p in pos[:n_test]}, inject=inject)
+        n_inj_pool = sum(1 for r in pool if r.get("injected"))
+        _dg = dict(nx.Graph(tr_pos).degree())
+        pos_degsums = [_dg.get(u, 0) + _dg.get(v, 0) for (u, v) in tr_pos]
+        n_neg = len(tr_pos)
+        for a in arms:
+            if a == "counterfactual":
+                neg = _select_counterfactual(pool, pos_degsums, n_neg, np.random.default_rng(seed))
+            else:
+                neg = _select(pool, a, n_neg, np.random.default_rng(seed))
+            sel_inj = sum(1 for uv in neg if frozenset(uv) in inj_keys)
+            rates[a].append(sel_inj / max(n_inj_pool, 1))
+            print(f"  seed {seed}  {a:<16} selected {sel_inj}/{n_inj_pool} injected hidden positives")
+    print("-" * 92)
+    print(f"  {'arm':<16}{'hidden-positive selection rate (mean, lower=better)':>52}")
+    for a in arms:
+        print(f"  {a:<16}{100*float(np.mean(rates[a])):>50.1f}%")
+    print("\n  A truly hidden positive (veto can't see it) is caught only by topology/rules ranking —")
+    print("  so a low rate here is the graded filters doing their job; a high rate is contamination.")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dataset", choices=["huri", "dryad"], default="huri")
@@ -254,6 +341,9 @@ def main():
                     help="leave each graded rule out of the stacked arm one-by-one")
     ap.add_argument("--mixture", action="store_true",
                     help="sweep representative/safe/verified-hard mixture proportions")
+    ap.add_argument("--injection-test", action="store_true",
+                    help="inject K known hidden positives; report which arm wrongly selects them")
+    ap.add_argument("--inject-k", type=int, default=1000)
     args = ap.parse_args()
 
     global _RULES
@@ -268,9 +358,9 @@ def main():
             spec[f"stacked[-{r.id}]"] = [x for x in all_ids if x != r.id]
         spec["stacked[NO rules]"] = []
     elif args.mixture:
-        spec = {"random_veto": "builtin", "topology_safe": "builtin", "stacked": "builtin"}
-        for rep, safe, hard in [(0.60, 0.30, 0.10), (0.70, 0.20, 0.10), (0.50, 0.30, 0.20),
-                                (0.80, 0.20, 0.00)]:
+        spec = {"random_veto": "builtin", "topology_safe": "builtin", "stacked": "builtin",
+                "counterfactual": ("cf",)}
+        for rep, safe, hard in [(0.60, 0.30, 0.10), (0.70, 0.20, 0.10), (0.50, 0.30, 0.20)]:
             spec[f"mix[{int(rep*100)}/{int(safe*100)}/{int(hard*100)}]"] = ("mix", (rep, safe, hard))
     else:
         spec = {a: "builtin" for a in ARMS}
@@ -294,6 +384,10 @@ def main():
               "leakage from BioGRID/IntAct is NOT ruled out. Purity numbers below are graph-only.")
     print("=" * 92)
 
+    if args.injection_test:
+        _injection_backtest(all_pos, nodes, full_pos_set, args)
+        return
+
     # metrics[(arm, model)][metric] = [per-seed values]
     metrics = {(a, m): {k: [] for k in ["auroc", "auprc", "ppi@100", "ppni@100", "auroc_noniso"]}
                for a in arm_list for m in args.models}
@@ -313,6 +407,8 @@ def main():
         rng.shuffle(gold_s)
         pool = _score_pool(tr_pos, args.max_pool, seed, full_pos_set, exclude=test_excl)
         n_neg = int(len(tr_pos))                                  # one negative per training positive
+        _dg = dict(nx.Graph(tr_pos).degree())
+        pos_degsums = [_dg.get(u, 0) + _dg.get(v, 0) for (u, v) in tr_pos]
         for arm in arm_list:
             sp = spec[arm]
             if sp == "builtin":
@@ -321,6 +417,8 @@ def main():
                 neg = _select(pool, "random_veto", n_neg, np.random.default_rng(seed))
             elif isinstance(sp, tuple) and sp[0] == "mix":
                 neg = _select_mixture(pool, n_neg, sp[1], np.random.default_rng(seed))
+            elif isinstance(sp, tuple) and sp[0] == "cf":
+                neg = _select_counterfactual(pool, pos_degsums, n_neg, np.random.default_rng(seed))
             else:
                 neg = _select_stacked_subset(pool, n_neg, sp)
             if not neg:
