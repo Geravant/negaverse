@@ -176,7 +176,11 @@ def _negaverse_verified_negatives(graph, train_pos, node_type, n, seed, max_pool
     res = run_pipeline(tg, cfg)
     hard = [r for r in res.records if r.mode == "train"]
     hard.sort(key=lambda r: r.confidence)          # least-confident (hardest) first — judge these
-    lit = LiteratureFilter(enabled=True, provider="auto", votes=1)
+    import os
+    sp = "local-docs/mappings/ensg_symbol.tsv"                # gene-symbol context for the judge
+    syms = ({l.split("\t")[0]: l.split("\t")[1].strip() for l in open(sp) if l.strip()}
+            if os.path.exists(sp) else {})
+    lit = LiteratureFilter(enabled=True, provider="auto", votes=1, names=syms)
     lit.fit(tg)
     kept, judged, dropped = [], 0, 0
     for r in hard:

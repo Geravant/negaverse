@@ -36,7 +36,8 @@ class LiteratureFilter(Filter):
 
     def __init__(self, enabled: bool = False, provider: str = "auto",
                  model: Optional[str] = None, max_tokens: int = 1024, votes: int = 5,
-                 cache_path: str = _DEFAULT_CACHE):
+                 cache_path: str = _DEFAULT_CACHE, names: Optional[dict] = None):
+        self.names = names or {}                 # node id -> human-readable name (e.g. ENSG->gene symbol)
         self.enabled = enabled
         self.provider = provider
         self.model = model
@@ -123,6 +124,10 @@ class LiteratureFilter(Filter):
 
         ctx = {"u_type": graph.node_type.get(u), "v_type": graph.node_type.get(v),
                "u_degree": graph.degree(u), "v_degree": graph.degree(v)}
+        if self.names.get(u):                    # gene symbol / name so the judge can reason
+            ctx["protein_a_name"] = self.names[u]
+        if self.names.get(v):
+            ctx["protein_b_name"] = self.names[v]
         try:
             card = self._reasoner.reason_vote(u, v, ctx, votes=self.votes)
         except Exception:
