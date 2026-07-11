@@ -335,6 +335,13 @@ HuRI genes structure-based). All numbers below are `[measured]`.
 (co-localization + structure-aware hydrophobicity, fused-confidence selection) nearly
 **erases the deficit** (−0.006, seed 0) but does not yet *beat* random.
 
+> ⚠️ **This −0.097 is now known to be mostly a BENCHMARK ARTIFACT — see §11.** The
+> corrected benchmark (`bench_corrected`, one frozen veto-cleaned pool, un-capped
+> positives) shows the full stack **beats** random at proper coverage. The −0.097
+> came from the 6,000-positive cap (→ sparse graph → an isolation shortcut in the
+> spectral features that random matches and topology-hard can't) plus 100% hard-tail
+> replacement. Read §11 before citing any number in this section.
+
 **CORRECTION.** An earlier pass reported stacked ≈ −0.000, but that was an **artifact**:
 `run_benchmark` had no `negaverse_stacked` branch, so the strategy fell through to
 *random* negatives. Fixed in `benchmark.py` (real `_negaverse_stacked_negatives` +
@@ -477,3 +484,49 @@ HuRI-vs-random **0.704**, Hu.MAP-vs-random 0.603 — the structural interface si
 which is *why* topology-hard pairs are so often hidden positives.
 
 Artifacts: `out/{rules_bench_huri,rules_bench_dryad,rules_bench_huintaf2,esm2_manifold_eval,manifold_flags_eval,af2_scores}.*` (gitignored).
+
+## 11. Corrected benchmark — the −0.097 was an artifact (`bench_corrected`, 2026-07-11)
+
+Two independent analyses converged: the headline "filters worse than random" (§9, §2's
+`−0.097`) was mostly a **benchmark artifact**, not evidence the filters pick bad negatives.
+Three defects, all fixed in `scripts/bench_corrected.py`:
+
+1. **Aggressive positive cap** (6,000 of 52,068 HuRI edges) → artificially sparse training
+   graph → most proteins isolated → **zero SVD embeddings** → the test set is dominated by an
+   "either endpoint isolated ⇒ negative" shortcut. Random negatives (81% all-zero features)
+   reproduce it; topology-hard (0% isolated — topology can't call an isolated pair hard) never
+   learns it. ~85% of the deficit rode on this.
+2. **Unequal pools** — random skipped the external veto, leaking ~25 known positives per set;
+   topology arms leaked ~0. Random was *dirtier* yet scored higher → AUROC rewarded the
+   shortcut, not purity.
+3. **100% hard-tail replacement** — using only the topology-hardest negatives is a narrow,
+   hidden-positive-enriched distribution.
+
+The corrected bench uses **one frozen veto-cleaned pool** shared by every arm, un-capped
+positives, degree-stratified reporting, and adds the arm the pipeline never offered —
+**topology-SAFE** (highest-confidence across the *full* pool, not the hard tail).
+
+**HuRI, 20,000 positives, one frozen pool, 3 seeds:**
+
+| arm | AUROC | AUPRC | AUROC (non-isolated) | PPNIHits@100 | hidden-pos leaked |
+|---|---:|---:|---:|---:|---:|
+| random (raw) | 0.872 | 0.886 | 0.903 | 0.807 | **25.3** |
+| random (veto-cleaned) | 0.874 | 0.885 | 0.906 | 0.810 | 0.7 |
+| topology **hard** | 0.739 | 0.784 | 0.743 | 0.520 | 5.7 |
+| topology **safe** | 0.872 | 0.883 | 0.907 | 0.797 | 0.3 |
+| **stacked** (full system) | **0.876** | **0.889** | **0.913** | 0.810 | 0.3 |
+
+→ **At proper coverage the full stack BEATS random** — AUROC +0.002, AUPRC best, and
+**+0.007 on the leakage-free non-isolated stratum** — while leaking ~35× fewer hidden
+positives (0.3 vs 25). `topology_safe` ties random; **`topology_hard` alone is the only loser**
+(−0.136) — confirming the problem was *selecting the hard tail*, not the filters. At an 8k cap
+the effect is starker (safe 0.800 vs random 0.758; hard collapses to 0.410).
+
+**Revised conclusion (supersedes §9's headline):** the known-positive filters do **not** make
+the data worse. The apparent loss entered where the pipeline (a) ran on a starved 6k-edge graph
+and (b) replaced a representative negative sample with the 100% topology-hard tail. Give it
+coverage and select **safe** (or biology-re-ranked `stacked`) negatives, and the system is the
+best arm — and by far the cleanest. **Remaining root cause in the product:** `hard_train`
+(matching.py) only offers the hard-tail selection; a **safe / stacked selection mode** should be
+the default, and topology-selection should guard against sparse graphs where it degenerates into
+a hub filter (see the DRYAD diagnosis, §10).
