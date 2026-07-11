@@ -48,8 +48,11 @@ they are also bound by type name — so `pli` rules can say `protein.pocket_volu
 and `ligand.volume`. A field absent from an entity's record → the rule abstains.
 
 **Annotations** (`negaverse/io/annotations.py`) are `dict[node -> dict[field -> value]]`,
-merged from whatever sources exist (currently `compartments` from GO cellular-component).
-Add an annotation type = load it there under a new field name — true for fields
+merged from whatever sources exist (currently `compartments` from GO cellular-component,
+plus `surface_hydrophobicity`, `pocket_volume`, `pocket_hydrophobicity`, and
+`pocket_polarity` — computed with `scripts/compute_surface_hydrophobicity.py` and
+`scripts/compute_pocket_descriptors.py` respectively, populated once someone runs
+them for a given graph's nodes). Add an annotation type = load it there under a new field name — true for fields
 sourced from external files/DBs. Graph-structural fields (`degree`, `neighbors`,
 `graph_two_m`) are different: they depend on whichever graph is loaded, but
 `build_annotation_table()` takes no graph argument today and its call sites don't
@@ -61,9 +64,11 @@ pass one in, so those fields abstain until that wiring is added (see
 The generic loader + evaluator + `RuleGradedFilter`/`RuleVetoFilter` are **built**:
 every rule here becomes a filter automatically, no code. 8 rules exist across
 `ppi.yaml`/`pli.yaml`; `colocalization_mismatch` is live wherever GO
-cellular-component annotations are populated. The rest are valid templates that
-currently abstain — most because their annotation field is genuinely unsourced
-(`TODO` in `source`), but the topology rule
-(`no_shared_neighbors_low_expected_edge`) abstains for a different reason: it
-needs the `build_annotation_table()` graph-wiring gap fixed first (see above),
-not just data.
+cellular-component annotations are populated. Most of the rest abstain because
+their annotation field is genuinely unsourced (`TODO` in `source`) or simply
+hasn't been computed yet for the graph in question — `hydrophobicity_interface`
+is calibrated and has a real loader (`scripts/compute_surface_hydrophobicity.py`)
+but still abstains until someone runs it for their graph's nodes. The topology
+rule (`no_shared_neighbors_low_expected_edge`) abstains for a different reason:
+it needs the `build_annotation_table()` graph-wiring gap fixed first (see
+above), not just data.

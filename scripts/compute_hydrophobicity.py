@@ -4,8 +4,12 @@ TSV the hydrophobicity rule reads.
 Fetches sequences from UniProt and scores each protein by its normalized mean
 Kyte-Doolittle hydrophobicity in [0,1] (0 = very hydrophilic, 1 = very
 hydrophobic). This is a **sequence-level proxy** — a proper surface/interface
-hydrophobicity needs structure; the rule threshold in rules/ppi.yaml is a
-placeholder Lucy will calibrate. Good enough to make the rule fire on real data.
+hydrophobicity needs structure. Superseded for the `surface_hydrophobicity`
+annotation field by scripts/compute_surface_hydrophobicity.py, which reuses
+this module's UniProt fetch + Kyte-Doolittle scale as its own Tier 2 (no
+usable structure) fallback and adds a structure-aware Tier 1 on top; run that
+script instead unless you specifically want the plain sequence-only estimate
+with no structure lookup at all.
 
     PYTHONPATH=. python scripts/compute_hydrophobicity.py --dataset sars
     PYTHONPATH=. python scripts/compute_hydrophobicity.py --ids-file uniprot_ids.txt

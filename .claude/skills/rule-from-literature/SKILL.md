@@ -96,10 +96,12 @@ fields that exist (or will exist) in `build_annotation_table()`:
 
 If a field does **not** exist yet, you may still author the rule. It will validate
 and abstain until the field is populated. `AUTHORING.md` Step 3 documents the
-specific tool/method that would compute each field — e.g. sequence-based
-hydrophobicity scales (Kyte–Doolittle/Engelman/Eisenberg) for
-`surface_hydrophobicity`, EVcouplings for `evolutionary_coupling_score_with_b`,
-Consurf for `interface_conservation`, fpocket/CASTp for the `pocket_*` fields,
+specific tool/method that computes (or would compute) each field —
+`scripts/compute_surface_hydrophobicity.py` (two-tier: DSSP+AlphaFold pLDDT
+exposure/disorder masking when a confident structure exists, sequence-mean
+fallback otherwise) for `surface_hydrophobicity`, EVcouplings for
+`evolutionary_coupling_score_with_b`, Consurf for `interface_conservation`,
+`scripts/compute_pocket_descriptors.py` (fpocket) for the `pocket_*` fields,
 RDKit for `ligand.volume`/`ligand.logp`, LipidMaps/HMDB for `ligand.class`, and
 `negaverse/streams/topology.py::TopologyFilter`'s own graph traversal for
 `neighbors`/`graph_two_m` (don't re-derive full L3/RA scoring as a YAML rule —
@@ -123,10 +125,11 @@ Examples you may generate:
 ```yaml
 when: "disjoint(a.compartments, b.compartments)"
 when: "ligand.volume > protein.pocket_volume * 1.5"
-when: "ligand.logp > 5 and protein.pocket_polarity == 'polar'"
+when: "ligand.logp > 5 and protein.pocket_polarity > 0.5"
 when: "disjoint(a.neighbors, b.neighbors) and (a.degree * b.degree) / a.graph_two_m < 0.01"
 when: "a.evolutionary_coupling_score_with_b < 0.1"
 when: "a.string_score_with_b < 0.15"
+when: "a.surface_hydrophobicity > 0.44 and b.surface_hydrophobicity > 0.44"
 when: "ligand.lineage_specificity == 'restricted_lineage' and disjoint(ligand.restricted_lineage_taxids, protein.lineage_taxids)"
 ```
 
