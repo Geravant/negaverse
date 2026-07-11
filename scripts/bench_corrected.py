@@ -40,7 +40,20 @@ import networkx as nx
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import roc_auc_score, average_precision_score
 
+from sklearn.linear_model import LogisticRegression  # noqa: F401 (available for extra rows)
 from negaverse.bench.benchmark import _spectral_embeddings, _hadamard_features
+
+
+def _make_model(kind: str, seed: int):
+    """Fresh classifier. Model-sensitivity: does the negative-selection verdict
+    survive changing the downstream learner (RF -> boosted trees)?"""
+    if kind == "rf":
+        return RandomForestClassifier(n_estimators=200, random_state=seed, n_jobs=-1)
+    if kind == "lgbm":
+        import lightgbm as lgb
+        return lgb.LGBMClassifier(n_estimators=300, learning_rate=0.05, num_leaves=31,
+                                  random_state=seed, n_jobs=-1, verbose=-1)
+    raise ValueError(kind)
 from negaverse.candidates import generate_candidates
 from negaverse.graph import TypedInteractionGraph
 from negaverse.io import load_huri_graph, load_negatome_in_ensembl_space
@@ -114,7 +127,9 @@ def _hits(y, s, k, positive=True):
     return float(np.mean(y[idx] == (1 if positive else 0)))
 
 
-def _evaluate(train_pos, train_neg, nodes, gold_test, seed, emb_dim=32):
+def _evaluate(train_pos, train_neg, nodes, gold_test, seed, models, emb_dim=32):
+    """Returns {model_kind: metric_dict}. Same features/split across models —
+    only the learner changes (model-sensitivity)."""
     rng = np.random.default_rng(seed)
     tp = list(train_pos)
     n_test = int(len(tp) * 0.2)
@@ -129,22 +144,23 @@ def _evaluate(train_pos, train_neg, nodes, gold_test, seed, emb_dim=32):
     deg = dict(train_G.degree())
     Xtr = feat(list(tr_pos) + list(train_neg))
     ytr = np.r_[np.ones(len(tr_pos)), np.zeros(len(train_neg))]
-    clf = RandomForestClassifier(n_estimators=200, random_state=seed, n_jobs=-1)
-    clf.fit(Xtr, ytr)
-
     te_pairs = list(test_pos) + list(test_neg)
     Xte = feat(te_pairs)
     yte = np.r_[np.ones(len(test_pos)), np.zeros(len(test_neg))].astype(int)
-    p = clf.predict_proba(Xte)[:, 1]
-    out = {"auroc": roc_auc_score(yte, p), "auprc": average_precision_score(yte, p),
-           "ppi@100": _hits(yte, p, min(100, len(test_pos), len(test_neg)), True),
-           "ppni@100": _hits(yte, p, min(100, len(test_pos), len(test_neg)), False)}
-    # non-isolated stratum: both endpoints have a train-graph edge (no zero-feature shortcut)
     keep = np.array([deg.get(u, 0) > 0 and deg.get(v, 0) > 0 for (u, v) in te_pairs])
-    if keep.sum() > 10 and len(set(yte[keep])) == 2:
-        out["auroc_noniso"] = roc_auc_score(yte[keep], p[keep])
-        out["frac_noniso_test"] = float(keep.mean())
-    return out
+
+    result = {}
+    for kind in models:
+        clf = _make_model(kind, seed)
+        clf.fit(Xtr, ytr)
+        p = clf.predict_proba(Xte)[:, 1]
+        out = {"auroc": roc_auc_score(yte, p), "auprc": average_precision_score(yte, p),
+               "ppi@100": _hits(yte, p, min(100, len(test_pos), len(test_neg)), True),
+               "ppni@100": _hits(yte, p, min(100, len(test_pos), len(test_neg)), False)}
+        if keep.sum() > 10 and len(set(yte[keep])) == 2:
+            out["auroc_noniso"] = roc_auc_score(yte[keep], p[keep])
+        result[kind] = out
+    return result
 
 
 def _load_dataset(name):
@@ -173,6 +189,7 @@ def main():
     ap.add_argument("--max-positives", type=int, default=20000, help="0 = all")
     ap.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2])
     ap.add_argument("--max-pool", type=int, default=200000)
+    ap.add_argument("--models", nargs="+", default=["rf", "lgbm"], choices=["rf", "lgbm"])
     args = ap.parse_args()
 
     global _RULES
@@ -186,9 +203,11 @@ def main():
           f"gold={len(gold)}  seeds={args.seeds}")
     print("=" * 92)
 
-    metrics = {a: {k: [] for k in ["auroc", "auprc", "ppi@100", "ppni@100", "auroc_noniso"]}
-               for a in ARMS}
+    # metrics[(arm, model)][metric] = [per-seed values]
+    metrics = {(a, m): {k: [] for k in ["auroc", "auprc", "ppi@100", "ppni@100", "auroc_noniso"]}
+               for a in ARMS for m in args.models}
     purity = {a: [] for a in ARMS}
+    print(f"models: {args.models}")
     for seed in args.seeds:
         rng = np.random.default_rng(seed)
         pos = all_pos
@@ -204,34 +223,33 @@ def main():
                 continue
             dirty = sum(1 for u, v in neg if frozenset((u, v)) in full_pos_set)
             purity[arm].append(dirty)
-            res = _evaluate(pos, neg, nodes, gold_s, seed)
-            for k, val in res.items():
-                if k in metrics[arm]:
-                    metrics[arm][k].append(val)
-            print(f"  seed {seed}  {arm:<15} AUROC={res['auroc']:.3f} "
-                  f"noniso={res.get('auroc_noniso', float('nan')):.3f}  "
-                  f"n_neg={len(neg)} hidden_pos_in_neg={dirty}")
+            per_model = _evaluate(pos, neg, nodes, gold_s, seed, args.models)
+            for m, res in per_model.items():
+                for k, val in res.items():
+                    if k in metrics[(arm, m)]:
+                        metrics[(arm, m)][k].append(val)
+            au = "  ".join(f"{m}={per_model[m]['auroc']:.3f}" for m in args.models)
+            print(f"  seed {seed}  {arm:<15} AUROC[{au}]  n_neg={len(neg)} hidden_pos={dirty}")
 
-    mean = lambda a, k: float(np.mean(metrics[a][k])) if metrics[a][k] else float("nan")
-    print("\n" + "=" * 92)
-    print("  CORRECTED results — mean over seeds. 'noniso' = AUROC on both-endpoints-non-isolated")
-    print("  test pairs (removes the zero-feature isolation shortcut).")
-    print("-" * 92)
-    hdr = f"  {'arm':<15}{'AUROC':>9}{'AUPRC':>9}{'AUROC_noniso':>14}{'PPIHit@100':>12}{'PPNIHit@100':>13}{'hidden+':>9}"
-    print(hdr); print("  " + "-" * (len(hdr) - 2))
-    for a in ARMS:
-        hp = float(np.mean(purity[a])) if purity[a] else float("nan")
-        print(f"  {a:<15}{mean(a,'auroc'):>9.3f}{mean(a,'auprc'):>9.3f}"
-              f"{mean(a,'auroc_noniso'):>14.3f}{mean(a,'ppi@100'):>12.3f}"
-              f"{mean(a,'ppni@100'):>13.3f}{hp:>9.1f}")
-    print("-" * 92)
-    r = mean("random_veto", "auroc")
-    print(f"  Δ AUROC vs veto-random:  " + "   ".join(
-        f"{a} {mean(a,'auroc')-r:+.3f}" for a in ("topology_hard", "topology_safe", "stacked")))
-    rn = mean("random_veto", "auroc_noniso")
-    print(f"  Δ AUROC_noniso vs veto-random:  " + "   ".join(
-        f"{a} {mean(a,'auroc_noniso')-rn:+.3f}" for a in ("topology_hard", "topology_safe", "stacked")))
-    print("\n  hidden+ = mean # full-HuRI positives leaked into the negative set (purity; lower=cleaner)")
+    mean = lambda a, m, k: float(np.mean(metrics[(a, m)][k])) if metrics[(a, m)][k] else float("nan")
+    for m in args.models:
+        print("\n" + "=" * 92)
+        print(f"  CORRECTED results — model={m.upper()}, mean over seeds. 'noniso' = both-endpoints-non-isolated.")
+        print("-" * 92)
+        hdr = f"  {'arm':<15}{'AUROC':>9}{'AUPRC':>9}{'AUROC_noniso':>14}{'PPIHit@100':>12}{'PPNIHit@100':>13}{'hidden+':>9}"
+        print(hdr); print("  " + "-" * (len(hdr) - 2))
+        for a in ARMS:
+            hp = float(np.mean(purity[a])) if purity[a] else float("nan")
+            print(f"  {a:<15}{mean(a,m,'auroc'):>9.3f}{mean(a,m,'auprc'):>9.3f}"
+                  f"{mean(a,m,'auroc_noniso'):>14.3f}{mean(a,m,'ppi@100'):>12.3f}"
+                  f"{mean(a,m,'ppni@100'):>13.3f}{hp:>9.1f}")
+        print("-" * 92)
+        r, rn = mean("random_veto", m, "auroc"), mean("random_veto", m, "auroc_noniso")
+        print("  Δ AUROC vs veto-random:  " + "   ".join(
+            f"{a} {mean(a,m,'auroc')-r:+.3f}" for a in ("topology_hard", "topology_safe", "stacked")))
+        print("  Δ AUROC_noniso vs veto-random:  " + "   ".join(
+            f"{a} {mean(a,m,'auroc_noniso')-rn:+.3f}" for a in ("topology_hard", "topology_safe", "stacked")))
+    print("\n  hidden+ = mean # true positives leaked into the negative set (purity; lower=cleaner)")
 
 
 if __name__ == "__main__":
