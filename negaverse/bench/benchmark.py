@@ -164,10 +164,21 @@ def _negaverse_stacked_negatives(graph, train_pos, node_type, n, seed, max_pool)
 
 def _negaverse_verified_negatives(graph, train_pos, node_type, n, seed, max_pool,
                                   judge_cap=None):
-    """§7 test: stacked-hard negatives, then the LLM judge (Haiku) VERIFIES each and
-    the pairs it calls `suspected_false_negative` (likely hidden positives) are
-    DROPPED, not just flagged. Over-samples so n clean pairs survive. judge_cap
-    bounds LLM cost (judge at most this many, hardest-first)."""
+    """§7 test — CONTROLLED drop-and-backfill so it isolates the judge's effect.
+
+    It starts from EXACTLY the `stacked` set (the top-n MOST-confident hard
+    negatives), runs the judge over that set, DROPS the pairs it calls
+    `suspected_false_negative` (likely hidden positives), and BACKFILLS to n from
+    the next-most-confident pairs in the pool. So `verified` differs from
+    `stacked` only by {dropped flagged pairs} -> {next-cleanest pairs} — the drop
+    is the only variable, nothing else.
+
+    (The earlier version sorted ASCENDING and trained on the least-confident tail,
+    so `verified` and `stacked` were near-disjoint sets from opposite ends of the
+    ranking — the AUROC gap was that confound, not the drop. Fixed here.)
+
+    Budget: judge the top-n set least-confident-first (hidden positives concentrate
+    at the low-confidence end even within the confident half), up to judge_cap."""
     from ..streams import LiteratureFilter
     tg = TypedInteractionGraph.from_edges(
         train_pos, dict(node_type), admissible_types=[("protein", "protein")], name="bench-train")
@@ -175,27 +186,30 @@ def _negaverse_verified_negatives(graph, train_pos, node_type, n, seed, max_pool
                          seed=seed, filters=["known_positive_veto", "structured", "topology", "rules"])
     res = run_pipeline(tg, cfg)
     hard = [r for r in res.records if r.mode == "train"]
-    hard.sort(key=lambda r: r.confidence)          # least-confident (hardest) first — judge these
+    hard.sort(key=lambda r: r.confidence, reverse=True)   # most-confident first == stacked ordering
+    base = hard[:n]                                        # stacked's EXACT set
     import os
     sp = "local-docs/mappings/ensg_symbol.tsv"                # gene-symbol context for the judge
     syms = ({l.split("\t")[0]: l.split("\t")[1].strip() for l in open(sp) if l.strip()}
             if os.path.exists(sp) else {})
     lit = LiteratureFilter(enabled=True, provider="auto", votes=1, names=syms)
     lit.fit(tg)
-    kept, judged, dropped = [], 0, 0
-    for r in hard:
-        if len(kept) >= n:
-            break
+    # judge within the stacked set, least-confident-first (best place to spend budget)
+    order = sorted(range(len(base)), key=lambda i: base[i].confidence)
+    flagged, judged = set(), 0
+    for i in order:
         if judge_cap is not None and judged >= judge_cap:
-            kept.append((r.u, r.v))                # budget spent — keep the rest unjudged
-            continue
-        sc = lit.score(tg, r.u, r.v); ev = sc.evidence or {}
+            break
+        sc = lit.score(tg, base[i].u, base[i].v); ev = sc.evidence or {}
         judged += 1
         if ev.get("gated_status") == "reviewed" and ev.get("verdict") == "suspected_false_negative":
-            dropped += 1
-            continue                                # DROP the hidden positive
-        kept.append((r.u, r.v))
-    print(f"    [verified] judged {judged}, dropped {dropped} suspected-FN, kept {len(kept)}")
+            flagged.add(i)
+    kept = [(base[i].u, base[i].v) for i in range(len(base)) if i not in flagged]
+    bi = n                                                 # backfill from next-most-confident
+    while len(kept) < n and bi < len(hard):
+        kept.append((hard[bi].u, hard[bi].v)); bi += 1
+    print(f"    [verified] judged {judged}, dropped {len(flagged)} suspected-FN, "
+          f"backfilled {n - (len(base) - len(flagged))}, kept {len(kept)}")
     return kept[:n]
 
 
