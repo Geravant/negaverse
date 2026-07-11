@@ -38,17 +38,26 @@ def get_plotly_js() -> str | None:
 
 
 def compute_traces(graph: TypedInteractionGraph, records, seed: int = 0,
-                   n_ref: int = 400) -> dict:
+                   n_ref: int = 400, x_axis: "tuple | None" = None) -> dict:
+    """x_axis lets a caller replace the default topology x-axis with another
+    "looks-real" lens — e.g. sequence/ESM2 resemblance on graphs too sparse for
+    topology (DRYAD). Pass (fn(u,v)->float|None, title, missing_note)."""
     from ..streams import TopologyFilter
     from ..io.annotations import build_annotation_table
     from .plots import _random_nonedges
-    tf = TopologyFilter(); tf.fit(graph)
     ann = build_annotation_table()
     rng = np.random.default_rng(seed)
 
-    def risk(u, v):
-        s = tf.score(graph, u, v); ev = s.evidence or {}
-        return float(ev.get("risk", 0.0)) if s.value is not None else 0.0
+    if x_axis is not None:
+        x_fn, x_title, x_missing = x_axis
+    else:
+        tf = TopologyFilter(); tf.fit(graph)
+
+        def x_fn(u, v):
+            s = tf.score(graph, u, v); ev = s.evidence or {}
+            return float(ev.get("risk", 0.0)) if s.value is not None else None
+
+        x_title, x_missing = "looks real (network shape)", "no network-shape data"
 
     def comp(u, v):
         cu, cv = ann.get(u, {}).get("compartments"), ann.get(v, {}).get("compartments")
@@ -96,13 +105,21 @@ def compute_traces(graph: TypedInteractionGraph, records, seed: int = 0,
     for name, pairs, col in cats:
         xs, ys, zs, txt = [], [], [], []
         for u, v in pairs:
-            y, z = comp(u, v), hyd(u, v)
+            x, y, z = x_fn(u, v), comp(u, v), hyd(u, v)
             missing = []
+            if x is None:
+                # On the default topology axis a None is rare → park it on the
+                # floor. On an alternate axis (e.g. DRYAD's ESM2 model) a None
+                # means "no score", and parking it at 0 would fake a "looks
+                # non-real" reading — so drop the pair instead.
+                if x_axis is not None:
+                    continue
+                x, _m = _BASE, missing.append(x_missing)
             if y is None:
                 y, _m = _BASE, missing.append("no compartment data")
             if z is None:
                 z, _m = _BASE, missing.append("no hydrophobicity data")
-            xs.append(round(risk(u, v), 3)); ys.append(round(y, 3)); zs.append(round(z, 3))
+            xs.append(round(x, 3)); ys.append(round(y, 3)); zs.append(round(z, 3))
             fl = list(flagmap.get((u, v)) or flagmap.get((v, u)) or [])
             note = "; ".join(fl + missing)
             txt.append(f"{u} × {v}" + (f"<br>{note}" if note else ""))
@@ -111,7 +128,7 @@ def compute_traces(graph: TypedInteractionGraph, records, seed: int = 0,
                        "x": _jitter(xs), "y": _jitter(ys), "z": _jitter(zs),
                        "text": txt, "hoverinfo": "text",
                        "marker": {"size": 3, "color": col, "opacity": 0.75}})
-    layout = {"scene": {"xaxis": {"title": "looks real (network shape)"},
+    layout = {"scene": {"xaxis": {"title": x_title},
                         "yaxis": {"title": "biology allows it (compartments)"},
                         "zaxis": {"title": "chemistry match (hydrophobicity)"}},
               "margin": {"l": 0, "r": 0, "t": 0, "b": 0},
