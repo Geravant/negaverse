@@ -562,3 +562,38 @@ HuRI and sparse DRYAD, though on DRYAD the win is thinner and rides more on the 
 stratum — the §10 sparsity caveat). This closes the "filters worse than random" question:
 with a fair pool, real coverage, and the `stacked` selection now shipped as default, the full
 filter system is the best negative-sampling arm and by far the purest.
+
+### 12.1 Per-rule leave-one-out (`bench_corrected --rule-ablation`, 3 seeds)
+
+Each graded rule removed from the `stacked` arm one at a time; **Δ = stacked[−rule] −
+stacked[ALL]**, so a rule that *helps* shows a **negative** Δ when removed. The meaningful
+column is **non-isolated AUROC** (`noniso`) — overall AUROC is dominated by the isolation
+shortcut where no biology rule can help; the biology only matters on pairs both endpoints of
+which are in the graph. (Overall-AUROC deltas are all within ±0.004 = noise.)
+
+**Δ non-isolated AUROC when the rule is removed (negative = rule helps):**
+
+| rule | fires on | HuRI·RF | HuRI·LGBM | DRYAD·RF | DRYAD·LGBM | verdict |
+|---|---|---:|---:|---:|---:|---|
+| `hydrophobicity_interface` | HuRI 34%, DRYAD 14% | −0.004 | −0.004 | **−0.043** | −0.003 | **helps** (the one keeper) |
+| `colocalization_mismatch` | HuRI 32%, DRYAD 0% | −0.003 | +0.001 | +0.001 | −0.002 | ~neutral (within noise) |
+| `evolutionary_coupling_absence` | **0% both** | 0.000 | 0.000 | 0.000 | 0.000 | **dead** — never fires |
+| `string_low_confidence_non_interaction` | **0% both** | 0.000 | 0.000 | 0.000 | 0.000 | **dead** — never fires |
+
+**Whole rule layer** (stacked[ALL] − stacked[NO rules]), non-isolated AUROC:
+HuRI-RF **+0.009**, HuRI-LGBM −0.004, DRYAD-RF **+0.048**, DRYAD-LGBM +0.008 — net positive
+on the biology-relevant stratum in 3 of 4 cells.
+
+**Conclusions — which rules earn their place:**
+1. **`evolutionary_coupling_absence` and `string_low_confidence_non_interaction` contribute
+   *exactly nothing* — anywhere.** Δ = 0.000 in all 8 cells because they *never fire*: no
+   `evolutionary_coupling.tsv` exists and `string_score_with_b` isn't even registered in
+   `_PAIR_FIELDS` (§10). **They are dead weight — drop them, or wire the data.**
+2. **`colocalization_mismatch` does not measurably contribute** — within noise on HuRI, zero
+   coverage on DRYAD (its `go_cc` table is ENSG-keyed; §10). Not earning its place as shipped.
+3. **`hydrophobicity_interface` is the one rule that genuinely helps** — a real, consistent
+   negative Δ on the non-isolated stratum on both datasets and both models (strongest on
+   DRYAD-RF, +0.043). It is the keeper.
+
+So of four graded rules, **one earns its place** (`hydrophobicity_interface`), one is
+noise (`colocalization_mismatch`), and two are dead until their data is wired.
