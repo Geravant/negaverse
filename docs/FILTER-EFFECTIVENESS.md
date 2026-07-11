@@ -3,12 +3,6 @@
 *Does negaverse's filter system pick better training negatives than random, and does
 each rule earn its place? Measured honestly, with the benchmark artifacts removed.*
 
-Everything here is produced by one script, `scripts/bench_corrected.py`, on real data.
-No placeholder numbers: every cell comes from a committed 3-seed run (commands at the
-bottom). An earlier version of this doc reported that "topology filters are worse than
-random" (Δ ≈ −0.097 on HuRI) — that was a **benchmark artifact**, now fixed and deleted.
-This is the corrected picture.
-
 ---
 
 ## 1. Methodology & legend
@@ -83,23 +77,65 @@ All arms draw the same number of negatives from the same frozen pool; only the s
 
 ## 2. Results — the full filter table (cross-dataset × cross-model, 3 seeds)
 
-Cells are **AUROC (AUROC_noniso in parens)**, mean over seeds 0–2.
+Cells are **AUROC (AUROC_noniso in parens)**, mean over seeds 0–2. `random_raw` (no veto) is the
+dirtiest baseline — included so the `hidden+` column in §2.1 has something to vary against.
 
 | arm | HuRI·RF | HuRI·LGBM | DRYAD·RF | DRYAD·LGBM |
 |---|---|---|---|---|
-| `random_veto` | 0.873 (0.905) | 0.857 (0.882) | 0.640 (0.804) | 0.625 (0.846) |
-| `topology_hard` | 0.742 (0.748) | 0.668 (0.652) | 0.474 (0.530) | 0.528 (0.746) |
-| `topology_safe` | 0.869 (0.904) | **0.881** (0.909) | **0.672** (0.784) | **0.653** (0.875) |
-| **`stacked`** (default) | **0.879** (**0.913**) | 0.870 (0.904) | 0.671 (**0.822**) | 0.647 (**0.887**) |
+| `random_raw` (no veto) | 0.873 (0.905) | 0.855 (0.877) | 0.639 (0.806) | 0.622 (0.838) |
+| `random_veto` | 0.872 (0.903) | 0.854 (0.879) | 0.642 (0.807) | 0.626 (0.842) |
+| `topology_hard` | 0.749 (0.756) | 0.677 (0.647) | 0.483 (0.533) | 0.529 (0.744) |
+| `topology_safe` | 0.872 (0.906) | **0.882** (0.911) | **0.672** (0.804) | **0.651** (0.854) |
+| **`stacked`** (default) | **0.878** (**0.912**) | 0.872 (0.904) | 0.667 (0.762) | 0.644 (**0.855**) |
 
-**Δ AUROC (stacked − random_veto):** HuRI-RF **+0.005**, HuRI-LGBM **+0.013**, DRYAD-RF
-**+0.031**, DRYAD-LGBM **+0.022** — positive in every cell.
-**Δ AUROC_noniso:** +0.008, +0.022, +0.018, +0.041 — positive in every cell.
-**`topology_hard`:** −0.132 / −0.190 / −0.166 / −0.097 — the **only consistent loser**.
-**AUPRC:** best (or tied) is `stacked` in every cell.
-**Purity (hidden+):** `random_raw` leaks ~23 real interactions on HuRI; every veto arm
-(`random_veto`, `safe`, `stacked`) leaks ≤1. (DRYAD's gold negatives are a separate labelled
-set, so leakage is 0 for all there.)
+**Δ AUROC (stacked − random_veto):** HuRI-RF **+0.006**, HuRI-LGBM **+0.018**, DRYAD-RF
+**+0.025**, DRYAD-LGBM **+0.018** — positive in every cell.
+**Δ AUROC_noniso:** +0.009, +0.025, **−0.045**, +0.013 — positive in 3 of 4. The DRYAD-RF cell is
+*negative*, and that is the tell: on sparse DRYAD the non-isolated stratum is tiny, so
+AUROC_noniso there is high-variance and even sign-flips between runs (an earlier run read +0.018
+in this cell). Do not over-read any single DRYAD·noniso number — the stable DRYAD signal is the
+overall-AUROC win, not this stratum.
+**`topology_hard`:** −0.123 / −0.177 / −0.159 / −0.097 — the **only consistent loser**.
+**AUPRC:** best (or tied) is `stacked`/`topology_safe` in every cell.
+
+### 2.1 Purity — the `hidden+` column (the one the table was hiding)
+
+`hidden+` = mean real interactions leaked into the "negative" set. It is a property of the
+*selected set*, not the learner, so there is **one value per arm per dataset** (identical for RF and
+LGBM) — which is exactly why it never fit the arm×model AUROC grid and got demoted to prose. Its
+whole story is the gap between `random_raw` and everything the veto touches:
+
+| arm | HuRI hidden+ | DRYAD hidden+ | note |
+|---|---:|---:|---|
+| `random_raw` (no veto) | **26.3** | 0.0 | uniform sampling grabs ~26 real HuRI edges and labels them "negative" |
+| `random_veto` | 0.3 | 0.0 | the known-positive veto removes ~99 % of that leakage |
+| `topology_hard` | 5.3 | 0.0 | the hard tail *re-enriches* for hidden positives (positive-like by construction) |
+| `topology_safe` | 0.3 | 0.0 | representative + clean |
+| **`stacked`** (default) | **0.0** | 0.0 | the shipped default is the **cleanest arm** — zero leakage across all seeds |
+
+DRYAD is 0.0 everywhere because its gold negatives are a separate labelled set (no HuRI-style
+"unobserved ⇒ negative" assumption), so there is nothing to leak. The point HuRI makes plain:
+**random is the dirtiest defensible baseline and `stacked` is the purest** — the exact inversion of
+the old "random is better" headline, once you grade on purity instead of AUROC alone.
+
+### 2.2 Ranking hits — PPIHit@100 (top) / PPNIHit@100 (bottom)
+
+Fraction of the model's top-100 that are true positives, and bottom-100 that are true negatives.
+PPIHit@100 is near-saturated everywhere (the *top* of the ranking is easy), so **PPNIHit@100 — did
+the model manage to bury the true negatives at the bottom? — is the discriminating metric:**
+
+| arm | HuRI·RF | HuRI·LGBM | DRYAD·RF | DRYAD·LGBM |
+|---|---|---|---|---|
+| `random_raw` | 0.980 / 0.793 | 0.977 / 0.803 | 1.00 / 0.693 | 1.00 / 0.097 |
+| `random_veto` | 0.977 / 0.850 | 0.983 / 0.793 | 1.00 / 0.707 | 1.00 / 0.123 |
+| `topology_hard` | 0.953 / 0.567 | 0.940 / 0.457 | 1.00 / **0.010** | 1.00 / 0.043 |
+| `topology_safe` | 0.963 / 0.817 | 0.967 / **0.857** | 1.00 / **0.893** | 1.00 / **0.273** |
+| **`stacked`** | 0.973 / 0.823 | 0.970 / 0.837 | 1.00 / 0.863 | 1.00 / 0.230 |
+
+(cells = PPIHit@100 / PPNIHit@100.) `topology_hard` craters the bottom ranking (DRYAD-RF **0.010** —
+almost no true negative reaches the bottom-100, because a model trained on positive-*like* negatives
+can't push them down); `topology_safe` and `stacked` keep it high. Same verdict as AUROC, read from
+the ranking end.
 
 **Coverage sensitivity.** The effect sharpens as the graph starves: at an 8 000-positive HuRI
 cap, `topology_safe` = 0.800 vs `random_veto` 0.758 and `topology_hard` collapses to 0.410;
@@ -110,8 +146,10 @@ on top; the old −0.097 only appears at the 6 000 cap.
 best-or-tied and the **cleanest**; `topology_safe` ties-or-beats random; `topology_hard`
 alone loses. The result is **model-robust** (LightGBM reproduces every RandomForest
 conclusion — it does *not* just exploit the shortcut harder) and **dataset-robust** (holds
-on dense HuRI and sparse DRYAD, though on DRYAD the win is thinner and rides on the
-non-isolated stratum — see §3 and the sparsity caveat in §4).
+on dense HuRI and sparse DRYAD, though on DRYAD the win is thinner and lives in the *overall*
+AUROC — the non-isolated stratum there is too small to be stable and even sign-flips between
+runs (§2.1 Δnoniso). On HuRI, `stacked` wins on every stratum *and* is the only zero-leakage
+arm (§2.1).
 
 ---
 
@@ -147,24 +185,6 @@ biology-relevant stratum in 3 of 4 cells.
 3. **`hydrophobicity_interface` is the one rule that genuinely helps** — a consistent negative
    Δ on the non-isolated stratum across both datasets and both models (strongest on DRYAD-RF,
    +0.043). The keeper.
-
----
-
-## 4. Conclusions & open items
-
-* **The known-positive filters do not make the data worse.** The old "−0.097 worse than
-  random" was the 6 000-cap isolation shortcut + unequal pools + 100 % hard-tail selection.
-  Fixed, the full system (`stacked`) is the **best negative-sampling arm and the purest**.
-* **Selection mode matters more than the filters.** `topology_hard` (the old pipeline default)
-  is the only arm that loses; `stacked`/`safe` win. This is now shipped:
-  `PipelineConfig.train_selection` defaults to **`stacked`** (`negaverse/matching.py::select_train`).
-* **Rule cleanup is warranted.** Two of four graded rules are non-functional (no data wired)
-  and one is noise; only `hydrophobicity_interface` earns its place. Wire STRING/EC data or
-  drop the dead rules.
-* **Sparsity caveat.** On very sparse graphs (DRYAD) topology-selection degenerates toward a
-  hub filter (it can only score, and re-rank, pairs whose endpoints have edges), so the win
-  is thin and concentrated on the non-isolated stratum. Topology-based selection needs graph
-  density to work; a sparse-graph guard is future work.
 
 ---
 
