@@ -99,17 +99,25 @@ and abstain until the field is populated. `AUTHORING.md` Step 3 documents the
 specific tool/method that computes (or would compute) each field —
 `scripts/compute_surface_hydrophobicity.py` (two-tier: DSSP+AlphaFold pLDDT
 exposure/disorder masking when a confident structure exists, sequence-mean
-fallback otherwise) for `surface_hydrophobicity`, EVcouplings for
-`evolutionary_coupling_score_with_b`, Consurf for `interface_conservation`,
-`scripts/compute_pocket_descriptors.py` (fpocket) for the `pocket_*` fields,
-RDKit for `ligand.volume`/`ligand.logp`, LipidMaps/HMDB for `ligand.class`, and
+fallback otherwise) for `surface_hydrophobicity`; Evolutionary Rate Covariation
+via RERconverge (`scripts/fetch_orthologs.py` -> `scripts/build_gene_alignments.py`
+-> `scripts/estimate_phangorn_trees.R` -> `scripts/rerconverge_runner.R` ->
+`scripts/compute_evolutionary_coupling.py`) for `evolutionary_coupling_score_with_b`
+— **note this field is genuinely pairwise** (loaded via
+`build_pair_annotation_table()`, not the per-node `build_annotation_table()` —
+see `AUTHORING.md` Step 3); Consurf for `interface_conservation`;
+`scripts/compute_pocket_descriptors.py` (fpocket) for the `pocket_*` fields;
+RDKit for `ligand.volume`/`ligand.logp`; LipidMaps/HMDB for `ligand.class`; and
 `negaverse/streams/topology.py::TopologyFilter`'s own graph traversal for
-`neighbors`/`graph_two_m` (don't re-derive full L3/RA scoring as a YAML rule —
-that filter is the authority for it). For lineage-mismatch rules, use **NCBI
-taxids** (e.g. via ete3's `NCBITaxa`) for `lineage_taxids`/
-`restricted_lineage_taxids`, not organism names — names have synonym/casing
-drift that breaks exact-match `when` conditions. Cite the relevant one when
-telling the user what would activate the staged rule.
+`neighbors`/`graph_two_m` — **don't write a YAML rule for "no shared neighbors +
+low expected edge count"**, `TopologyFilter` already computes exactly that
+(more rigorously, via L3 paths too) as an independent stream; a YAML rule
+duplicating it double-counts the same fact rather than adding evidence (this
+project shipped and later removed such a rule for exactly this reason). For
+lineage-mismatch rules, use **NCBI taxids** (e.g. via ete3's `NCBITaxa`) for
+`lineage_taxids`/`restricted_lineage_taxids`, not organism names — names have
+synonym/casing drift that breaks exact-match `when` conditions. Cite the
+relevant one when telling the user what would activate the staged rule.
 
 ## Step 4 — Author the `when` expression
 
@@ -126,7 +134,6 @@ Examples you may generate:
 when: "disjoint(a.compartments, b.compartments)"
 when: "ligand.volume > protein.pocket_volume * 1.5"
 when: "ligand.logp > 5 and protein.pocket_polarity > 0.5"
-when: "disjoint(a.neighbors, b.neighbors) and (a.degree * b.degree) / a.graph_two_m < 0.01"
 when: "a.evolutionary_coupling_score_with_b < 0.1"
 when: "a.string_score_with_b < 0.15"
 when: "a.surface_hydrophobicity > 0.44 or b.surface_hydrophobicity > 0.44"
@@ -135,7 +142,10 @@ when: "ligand.lineage_specificity == 'restricted_lineage' and disjoint(ligand.re
 
 Never invent new predicates; if the constraint cannot be represented using the
 available predicates and fields, explain that it should be handled by the LLM
-filter using `rationale`, not by a deterministic rule.
+filter using `rationale`, not by a deterministic rule. Also never author
+`disjoint(a.neighbors, b.neighbors) and (a.degree * b.degree) / a.graph_two_m
+< 0.01`-style rules — that's `TopologyFilter`'s `no_overlap` case, already
+computed there more rigorously; see Step 3.
 
 ## Step 5 — Set `effect` and `weight`
 

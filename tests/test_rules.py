@@ -81,22 +81,6 @@ def test_rule_abstains_on_missing_annotation():
     assert f.score(g, "a", "b").value is None
 
 
-def test_topology_rule_fires_from_graph_derived_fields():
-    """Lucy's no_shared_neighbors_low_expected_edge rule should fire with NO
-    explicit annotations — the filter derives neighbors/degree/graph_two_m from
-    the live graph. 60 disjoint edges => 2m=120, so degree-1 pairs with disjoint
-    neighbourhoods have expected edge 1/120 < 0.01."""
-    edges = [(f"p{2*i}", f"p{2*i+1}") for i in range(60)]      # 60 disjoint edges
-    g = TypedInteractionGraph.from_edges(
-        edges, {f"p{i}": "protein" for i in range(120)},
-        admissible_types=[("protein", "protein")], name="chains")
-    f = RuleGradedFilter()                                     # no explicit annotations
-    f.fit(g)
-    s = f.score(g, "p0", "p2")            # disjoint neighbours (p1 vs p3), degree 1 each
-    assert s.value == 0.85                # safer_negative weight 0.7 -> 0.85
-    assert "no_shared_neighbors_low_expected_edge" in s.flags
-
-
 def test_wrong_types_do_not_fire():
     # viral/host typed graph: the [protein,protein] rule shouldn't apply
     g = TypedInteractionGraph.from_edges(
