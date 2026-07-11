@@ -147,9 +147,30 @@ def _evaluate(train_pos, train_neg, nodes, gold_test, seed, emb_dim=32):
     return out
 
 
+def _load_dataset(name):
+    """(all_pos edges, gold-negative pairs, node list, full_pos_set)."""
+    if name == "huri":
+        g = load_huri_graph()
+        gold = [tuple(p) for p in load_negatome_in_ensembl_space(set(g.g.nodes()))]
+        pos = [tuple(e) for e in g.g.edges()]
+        return pos, gold, list(g.g.nodes()), {frozenset(e) for e in g.g.edges()}
+    if name == "dryad":
+        pos, neg = [], []
+        with open("local-docs/dryad-ppi/benchmarks/benchmarks/positives_and_negatives.tsv") as fh:
+            next(fh)
+            for line in fh:
+                pair, cat = line.rstrip("\n").split("\t")
+                a, b = pair.split("_")
+                (pos if cat == "positive" else neg).append((a, b))
+        nodes = sorted({p for e in pos + neg for p in e})
+        return pos, neg, nodes, {frozenset(e) for e in pos}
+    raise ValueError(name)
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--max-positives", type=int, default=20000, help="0 = full HuRI")
+    ap.add_argument("--dataset", choices=["huri", "dryad"], default="huri")
+    ap.add_argument("--max-positives", type=int, default=20000, help="0 = all")
     ap.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2])
     ap.add_argument("--max-pool", type=int, default=200000)
     args = ap.parse_args()
@@ -158,14 +179,10 @@ def main():
     _RULES = [r for r in load_rules()
               if r.modality == "ppi" and r.effect in ("safer_negative", "riskier_negative")]
 
-    g = load_huri_graph()
-    gold = [tuple(p) for p in load_negatome_in_ensembl_space(set(g.g.nodes()))]
-    full_pos_set = {frozenset(e) for e in g.g.edges()}         # FULL HuRI, for purity check
-    all_pos = [tuple(e) for e in g.g.edges()]
-    nodes = list(g.g.nodes())
+    all_pos, gold, nodes, full_pos_set = _load_dataset(args.dataset)
     print("=" * 92)
-    print("CORRECTED benchmark — HuRI, one frozen veto-cleaned pool, un-capped positives")
-    print(f"full HuRI edges={len(all_pos)}  max_positives={args.max_positives or 'ALL'}  "
+    print(f"CORRECTED benchmark — {args.dataset.upper()}, one frozen veto-cleaned pool")
+    print(f"full edges={len(all_pos)}  nodes={len(nodes)}  max_positives={args.max_positives or 'ALL'}  "
           f"gold={len(gold)}  seeds={args.seeds}")
     print("=" * 92)
 
