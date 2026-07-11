@@ -82,6 +82,16 @@ def compute_traces(graph: TypedInteractionGraph, records, seed: int = 0,
     # So keep the pair, park the missing lens on the base plane (0.0), and say so
     # in the hover — the point stays visible and honest on the axes that do apply.
     _BASE = 0.0
+    # When a whole regime is degenerate on these axes — e.g. SARS emitted
+    # negatives are all at the topology floor (x=0.02) with viral y=z on the base
+    # plane — 400 identical points collapse to one occluded dot and the colour
+    # vanishes. A tiny seeded jitter spreads exact-overlaps into a visible cloud
+    # without touching the read (positives sit ~0.6 on x, negatives ~0.02).
+    jit = np.random.default_rng(seed)
+
+    def _jitter(vals):
+        return [round(v + float(jit.normal(0.0, 0.006)), 4) for v in vals]
+
     traces = []
     for name, pairs, col in cats:
         xs, ys, zs, txt = [], [], [], []
@@ -97,7 +107,8 @@ def compute_traces(graph: TypedInteractionGraph, records, seed: int = 0,
             note = "; ".join(fl + missing)
             txt.append(f"{u} × {v}" + (f"<br>{note}" if note else ""))
         traces.append({"type": "scatter3d", "mode": "markers",
-                       "name": f"{name} ({len(xs)})", "x": xs, "y": ys, "z": zs,
+                       "name": f"{name} ({len(xs)})",
+                       "x": _jitter(xs), "y": _jitter(ys), "z": _jitter(zs),
                        "text": txt, "hoverinfo": "text",
                        "marker": {"size": 3, "color": col, "opacity": 0.75}})
     layout = {"scene": {"xaxis": {"title": "looks real (network shape)"},
