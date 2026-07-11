@@ -15,13 +15,21 @@
 - id: physicochemical_incompatibility
   modality: pli
   applies_to: [protein, ligand]
-  when: "ligand.logp > 5 and protein.pocket_polarity == 'polar'"
+  when: "ligand.logp > 5 and protein.pocket_polarity > 0.5"
   effect: safer_negative
   weight: 0.4
   rationale: >
     A highly lipophilic ligand is a poor fit for a strongly polar pocket,
-    lowering the plausibility of binding.
-  source: "TODO — thresholds to confirm"
+    lowering the plausibility of binding. `pocket_polarity` is numeric
+    (fraction of polar pocket atoms, from fpocket's "Proportion of polar
+    atoms" / 100 — scripts/compute_pocket_descriptors.py), not a category
+    string; fixed from an earlier `== 'polar'` comparison that didn't match
+    the loader's actual output type. 0.5 ("more than half the pocket is
+    polar") is a reasonable but not yet empirically calibrated cut — PLI
+    calibration against gold-standard pocket data is a follow-up, out of
+    scope for the PPI hydrophobicity calibration this rule's sibling
+    (rules/ppi.yaml's hydrophobicity_interface) went through.
+  source: "TODO — thresholds to confirm (not yet calibrated against PLI gold-standard data)"
 
 - id: lineage_restricted_ligand_mismatch
   modality: pli

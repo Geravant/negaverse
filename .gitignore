@@ -220,6 +220,10 @@ __marimo__/
 # Local documents
 local-docs/
 
+# Local scratch/testing modules (not part of the shipped package)
+negaverse/io/upna_ppi.py
+negaverse/io/dryad_ppi.py
+
 # prototype outputs
 out/
 __pycache__/

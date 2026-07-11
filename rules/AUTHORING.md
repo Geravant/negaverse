@@ -41,6 +41,15 @@ Examples:
   own minimum reporting threshold (`combined_score < 0.15`) → **safer** negative
   (PPI) — the database finds no supporting evidence in any of its channels
   (experiments, curated DBs, co-expression, text-mining, genomic context).
+- If either protein in a pair has unusually HIGH exposed surface hydrophobicity
+  → **safer** negative (PPI) — counterintuitive at first, but empirically
+  calibrated against two gold-standard PPI benchmarks (DRYAD, UPNA-PPI): real
+  interactions have LOWER exposed hydrophobicity than real non-interactions,
+  consistent with interface hot spots being enriched in aromatic/cation-pi
+  residues (Trp, Tyr, Arg — Bogan & Thorn 1998) rather than classic
+  Kyte-Doolittle-hydrophobic ones. See `rules/ppi.yaml`'s
+  `hydrophobicity_interface` rationale for the full writeup — a worked example
+  of Step 5's "empirical calibration can reverse your initial premise" guidance.
 
 If you can't phrase it this way, it's probably not a filter rule (it may be a
 positive-interaction predictor, which this engine does not encode).
@@ -78,16 +87,16 @@ where they live, and how they are intended to be computed or loaded.
 | field                              | on       | meaning / computation                                                                                       |
 |------------------------------------|----------|-------------------------------------------------------------------------------------------------------------|
 | `compartments`                    | protein  | Set of GO cellular-component terms, loaded from TSV as in `localization.py` (one node → comma-separated compartments). |
-| `surface_hydrophobicity`          | protein  | Sequence-based surface hydrophobicity score (e.g. Kyte–Doolittle / similar scale, aggregated over exposed or interface residues). |
+| `surface_hydrophobicity`          | protein  | Two-tier Kyte-Doolittle score (`scripts/compute_surface_hydrophobicity.py`): Tier 1 aggregates over solvent-exposed (DSSP RSA), ordered (AlphaFold pLDDT) residues when a confident structure exists; Tier 2 falls back to a whole-sequence mean otherwise. See `rules/ppi.yaml`'s `hydrophobicity_interface` for the calibrated (and direction-reversed) threshold. |
 | `evolutionary_coupling_score_with_b` | protein  | Score on `a` for its coupling with `b`, from sequence covariation (e.g. EVcouplings; aggregated and normalized to `[0,1]`). |
 | `string_score_with_b`             | protein  | Score on `a` for its STRING (v12.0, physical subnetwork) `combined_score` with `b`, normalized to `[0,1]` (raw score ÷ 1000). STRING's own reporting cutoff is 0.15 — it doesn't return pairs below that by default. |
 | `interface_conservation`          | protein  | Mean conservation over interface residues, derived from MSAs (Consurf/entropy) plus interface annotation (structure/docking/prediction). |
 | `degree`                          | protein  | Graph degree of the protein node in the PPI / heterogeneous network.                                       |
 | `neighbors`                       | protein  | Set of node IDs adjacent to this node in the graph currently loaded; pair with `disjoint`/`shared`/`jaccard` for common-neighbor reasoning (mirrors `TopologyFilter`'s `cn`). |
 | `graph_two_m`                     | protein  | `2 × total edges` in the graph currently loaded — same value on every node. Combine with `a.degree`/`b.degree` for the real configuration-model expected-edge count `(a.degree * b.degree) / a.graph_two_m` (mirrors `TopologyFilter`'s `expected_config`). |
-| `pocket_volume`                   | protein  | Binding pocket volume from structure-based pocket detection (e.g. fpocket / CASTp) on available structures or models. |
-| `pocket_hydrophobicity`           | protein  | Hydrophobicity score for the binding pocket (e.g. fpocket hydrophobicity descriptor).                       |
-| `pocket_polarity`                 | protein  | Polarity score for the binding pocket (e.g. fraction of polar residues/atoms in pocket).                    |
+| `pocket_volume`                   | protein  | Binding pocket volume (Å³), fpocket's `Volume` on the top-ranked pocket (`scripts/compute_pocket_descriptors.py`), confident AlphaFold structures only. |
+| `pocket_hydrophobicity`           | protein  | fpocket's native (unnormalized) `Hydrophobicity score` for the top-ranked pocket (`scripts/compute_pocket_descriptors.py`).                       |
+| `pocket_polarity`                 | protein  | Numeric `[0,1]` fraction of polar pocket atoms, fpocket's `Proportion of polar atoms` ÷ 100 (`scripts/compute_pocket_descriptors.py`).                    |
 | `volume`                          | ligand   | Approximate molecular volume from 3D conformers or vdW volume descriptors computed from SMILES (e.g. RDKit). |
 | `logp`                            | ligand   | cLogP computed from SMILES using a cheminformatics toolkit (e.g. RDKit).                                     |
 | `class`                           | ligand   | Ligand class (lipid, small molecule, metabolite, etc.), from rule-based classification or external databases (LipidMaps, HMDB…). |
@@ -106,15 +115,23 @@ Additional fields you **plan** to use and how to compute them:
 
 ### PPI fields
 
-- `a.surface_hydrophobicity`, `b.surface_hydrophobicity`  
-  - **Primary (fast, universal)**: sequence-based hydrophobicity scales  
-    (e.g. Kyte–Doolittle, Engelman, Eisenberg). Compute per-residue hydrophobicity
-    from the protein sequence, then aggregate over solvent-exposed or predicted
-    interface residues to get a normalized surface hydrophobicity score.
-  - **Optional refinement (where structures exist)**: structure-based hydrophobic
-    patch tools (e.g. MolPatch, Protein-sol patches) can be used offline to refine
-    surface patch metrics, but rules should be written to work with sequence-based
-    scores alone.
+- `a.surface_hydrophobicity`, `b.surface_hydrophobicity` — **implemented**,
+  `scripts/compute_surface_hydrophobicity.py`:
+  - **Tier 1 (structure present, confident — mean AlphaFold pLDDT ≥ 70)**: run
+    `mkdssp` (via `Bio.PDB.DSSP`) on the AlphaFold model to get each residue's
+    relative solvent accessibility (RSA); aggregate Kyte-Doolittle over
+    residues that are both solvent-exposed (RSA ≥ 0.25) and ordered/confident
+    (per-residue pLDDT ≥ 70, used as the disorder-masking proxy). DSSP results
+    are cached per structure (`local-docs/alphafold/<acc>.dssp.json`) since
+    re-running it is the pipeline's dominant cost.
+  - **Tier 2 (no usable structure)**: mean Kyte-Doolittle over the whole
+    sequence (`scripts/compute_hydrophobicity.py`'s original proxy).
+  - Tested alternatives that did **not** replace this: the Wimley-White
+    interfacial hydrophobicity scale (comparable separation, no clear win) and
+    Spatial Aggregation Propensity / SAP (weaker signal once accounting for
+    its much lower structure-only pair coverage — no sequence fallback exists
+    for a spatial-patch method). See the calibration script's docstring for
+    the full three-way comparison.
 
 - `a.evolutionary_coupling_score_with_b`  
   - Use tools such as EVcouplings on sequence MSAs to compute evolutionary
@@ -157,13 +174,17 @@ Additional fields you **plan** to use and how to compute them:
 Pocket descriptors (protein side):
 
 - `protein.pocket_volume`, `protein.pocket_polarity`, `protein.pocket_hydrophobicity`
-  - Use structure-based pocket tools such as **fpocket** (or CASTp, similar) on
-    available protein structures or high-confidence models:
-    - Detect pockets.
-    - For the relevant pocket, store:
-      - `pocket_volume` from fpocket.
-      - `pocket_hydrophobicity` (fpocket’s hydrophobicity descriptor).
-      - `pocket_polarity` (e.g. fraction of polar residues/atoms).
+  — **implemented**, `scripts/compute_pocket_descriptors.py`: runs **fpocket**
+  on the AlphaFold model (reusing the same fetch as `surface_hydrophobicity`'s
+  Tier 1, confident structures only — no sequence fallback exists for pocket
+  geometry), reads the top-ranked pocket ("Pocket 1", fpocket's own
+  druggability-adjacent ranking) from its `info.txt`:
+    - `pocket_volume` — fpocket's `Volume` (Å³), used as-is.
+    - `pocket_hydrophobicity` — fpocket's `Hydrophobicity score`, native
+      (unnormalized) scale; no existing rule reads this field yet.
+    - `pocket_polarity` — fpocket's `Proportion of polar atoms` ÷ 100, a
+      **numeric** `[0,1]` fraction (not a category string — `rules/pli.yaml`'s
+      `physicochemical_incompatibility` compares it as `> 0.5`).
   - Not all proteins will have structures; rules must tolerate missing pocket
     fields by abstaining when these fields are absent.
 
@@ -272,10 +293,11 @@ Examples:
 ```yaml
 when: "disjoint(a.compartments, b.compartments)"
 when: "ligand.volume > protein.pocket_volume * 1.5"
-when: "ligand.logp > 5 and protein.pocket_polarity == 'polar'"
+when: "ligand.logp > 5 and protein.pocket_polarity > 0.5"
 when: "disjoint(a.neighbors, b.neighbors) and (a.degree * b.degree) / a.graph_two_m < 0.01"
 when: "a.evolutionary_coupling_score_with_b < 0.1"
 when: "a.string_score_with_b < 0.15"
+when: "a.surface_hydrophobicity > 0.44 or b.surface_hydrophobicity > 0.44"
 when: "ligand.lineage_specificity == 'restricted_lineage' and disjoint(ligand.restricted_lineage_taxids, protein.lineage_taxids)"
 ```
 
@@ -338,6 +360,20 @@ Database-confidence-score guidance:
   genomic context) — weight in the 0.5–0.6 range. Comprehensive, but not a
   physical-law-strength constraint the way disjoint compartments is.
 
+**Empirical calibration can reverse your initial premise — don't discard the
+field, flip the rule.** `hydrophobicity_interface`'s original premise ("low
+mutual hydrophobicity → safer negative") was intuitive but wrong: calibrating
+against two gold-standard PPI benchmarks (DRYAD, UPNA-PPI;
+`scripts/calibrate_hydrophobicity_threshold.py`) showed real interactions
+have *lower* exposed hydrophobicity than real non-interactions — the opposite
+direction. Rather than conclude the field is useless, check whether the
+reversed relationship has literature support (here: PPI interface hot spots
+are enriched in aromatic/cation-pi residues, not classic hydrophobic ones —
+Bogan & Thorn 1998) and flip `effect`/`when` accordingly. A field that
+separates the classes with AUROC clearly below 0.5 is just as informative as
+one clearly above 0.5 — only AUROC ≈ 0.5 (no separation either way) means
+the field itself isn't useful for this rule.
+
 When two rules fire on the same pair, their values are combined weighted by
 `weight`.
 
@@ -378,6 +414,13 @@ rationale: >
   experiments, curation, co-expression, and text-mining; a pair scoring below
   STRING's own reporting threshold has no supporting evidence in any channel,
   making a non-edge a safer negative.
+
+rationale: >
+  Calibration against gold-standard PPI benchmarks showed real interactions
+  have lower exposed hydrophobicity than real non-interactions — interface
+  hot spots are enriched in aromatic/cation-pi residues, not classic
+  hydrophobic ones. A pair where either protein shows unusually high exposed
+  hydrophobicity is therefore a safer negative, not a riskier one.
 ```
 
 ---

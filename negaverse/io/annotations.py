@@ -8,8 +8,12 @@ new field name — no rule-engine changes.
 
 Two kinds are wired:
   * set-valued `compartments` (GO cellular-component terms) from a TSV.
-  * scalar fields (e.g. `surface_hydrophobicity`) from `node<TAB>value` TSVs under
-    local-docs/annotations/ (compute one with scripts/compute_hydrophobicity.py).
+  * scalar fields (`surface_hydrophobicity`, `pocket_volume`,
+    `pocket_hydrophobicity`, `pocket_polarity`) from `node<TAB>value` TSVs under
+    local-docs/annotations/ — compute with scripts/compute_surface_hydrophobicity.py
+    (two-tier: DSSP+AlphaFold structure, sequence fallback) and
+    scripts/compute_pocket_descriptors.py (fpocket; protein-side pocket
+    descriptors only, structure required — no sequence fallback exists for these).
 
 Graph-derived fields (neighbors / degree / graph_two_m) are NOT loaded here — the
 rule filters add them from the live graph at fit time (see streams/rules.py), so
@@ -25,6 +29,9 @@ ANNOT_DIR = "local-docs/annotations"
 # field name -> default TSV path (node<TAB>float). Extend as sources are added.
 _SCALAR_FIELDS = {
     "surface_hydrophobicity": f"{ANNOT_DIR}/hydrophobicity.tsv",
+    "pocket_volume": f"{ANNOT_DIR}/pocket_volume.tsv",
+    "pocket_hydrophobicity": f"{ANNOT_DIR}/pocket_hydrophobicity.tsv",
+    "pocket_polarity": f"{ANNOT_DIR}/pocket_polarity.tsv",
 }
 
 
