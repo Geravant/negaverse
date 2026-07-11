@@ -411,6 +411,44 @@ Two rules have **zero HuRI coverage** (no ESM2-coupling / STRING data wired), so
 evaluate them — they need a dataset where they fire (DRYAD coev Q1 = 0.773). The base
 `structured+topology` already captures HuRI's usable signal.
 
+**Why the DRYAD rule ablation shows the layer is *inert* there — three diagnosed causes
+(not a bug).** On DRYAD every config (ALL/NONE/each LOO) returns a byte-identical AUROC.
+Diagnosed case-by-case:
+1. *Topology saturation + mean-fusion demotion.* DRYAD's sparse graph (17,341 nodes, 3,000
+   edges) gives **5,729 non-edges confidence 1.0** — more than the 2,500 quota — so the top-N
+   is saturated. `hydrophobicity_interface` fires (15%) but `_fuse_confidence` is a **weighted
+   mean**: a `safer_negative` graded value 0.75 fused with a structured 1.0 gives 0.875 < 1.0,
+   so the rule *demotes* every pair it fires on **out** of the saturated top-N (0% of the
+   selected top-2500 are rule-fired). ⚠️ This is a **fusion smell**: two signals that *agree*
+   a pair is safe should reinforce (noisy-OR → 1.0), not average down — likely also weakens
+   rules on HuRI. Core-pipeline change; flag before touching.
+2. *ID-space gap.* `colocalization_mismatch` fires 0/3000 — `go_cc.tsv` is mostly ENSG-keyed
+   (HuRI), overlapping only 270 of 17,341 DRYAD UniProt nodes (1.6%).
+3. *Missing data everywhere.* `evolutionary_coupling.tsv` is absent (and `<0.1` threshold vs
+   ESM2-cosine median 0.88 wouldn't fire anyway); `string_score_with_b` isn't even registered
+   in `_PAIR_FIELDS`. Both rules are dead on every dataset until data + wiring land.
+
+**§10 — Paper-style inductive eval (`bench_paper_style`, DRYAD, ESM2 features, 3 seeds).**
+Reproduces the UPNA-PPI/TPPNI protocol (Chatterjee & Ravandi et al., btaf148 2025 — the
+source of the topology strategy): **inductive** disjoint-protein split, **sequence** (ESM2)
+features so unseen proteins are featurizable, **local ranking** metrics. The paper's claim:
+AUROC hides hard-negative value; `PPIHits@TopK`/`PPNIHits@BottomK` reveal it.
+
+| strategy | AUROC | PPIHits@Top100 | PPNIHits@Bottom100 |
+|---|---:|---:|---:|
+| random | 0.877 | 0.930 | **0.980** |
+| topology | 0.797 | 0.930 (Δ+0.00) | 0.830 (Δ−0.15) |
+| stacked (topology+rules) | 0.780 | **0.947** (Δ+0.02) | 0.783 (Δ−0.20) |
+
+→ **Partial replication.** `stacked` edges out random on positive-ranking (+0.017 PPIHits@Top100)
+*despite* far lower AUROC — the ranking-beats-AUROC effect is real but small; topology alone ties.
+But both **hurt** negative-ranking (−0.15/−0.20), opposite to the paper. Cause: negaverse's
+common-neighbour hardness on a **528-edge** inductive train subgraph is far weaker than the
+paper's **Contrastive-L3 (L3=0) on the full 706k-PPI network**, and is hidden-positive
+contaminated — contaminated hard negatives buy a sliver of positive-ranking at a large
+negative-confidence cost. **Open work:** implement true Contrastive-L3 hardness and re-measure
+here; use the judge to de-contaminate. The bench now exists as the instrument.
+
 **Manifold flag, leakage-free (`eval_manifold_flags`):** on pairs topology calls SAFE,
 the manifold flag finds hidden positives at AUROC **0.68**; on a 5%-contaminated eval set
 it removed 210/460 injected positives (460→250) at a cost of 352 clean flags.
