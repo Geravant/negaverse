@@ -73,16 +73,29 @@ def compute_traces(graph: TypedInteractionGraph, records, seed: int = 0,
             ("our chosen non-pairs", hard, "#e9c46a"),
             ("risky — may interact", risky, "#e63946")]
 
+    # The x-axis (topology risk) is computable for ANY pair straight from the
+    # graph; only y (compartments) and z (hydrophobicity) need external
+    # annotation. On graphs where one partner class is unannotated — e.g. the
+    # viral proteins in the SARS-CoV-2 viral-host graph — dropping a pair for a
+    # missing y/z would silently erase every positive and every emitted negative
+    # (they all touch a viral protein), leaving only annotated host-host randoms.
+    # So keep the pair, park the missing lens on the base plane (0.0), and say so
+    # in the hover — the point stays visible and honest on the axes that do apply.
+    _BASE = 0.0
     traces = []
     for name, pairs, col in cats:
         xs, ys, zs, txt = [], [], [], []
         for u, v in pairs:
             y, z = comp(u, v), hyd(u, v)
-            if y is None or z is None:
-                continue
+            missing = []
+            if y is None:
+                y, _m = _BASE, missing.append("no compartment data")
+            if z is None:
+                z, _m = _BASE, missing.append("no hydrophobicity data")
             xs.append(round(risk(u, v), 3)); ys.append(round(y, 3)); zs.append(round(z, 3))
-            fl = flagmap.get((u, v)) or flagmap.get((v, u)) or []
-            txt.append(f"{u} × {v}" + (f"<br>{'; '.join(fl)}" if fl else ""))
+            fl = list(flagmap.get((u, v)) or flagmap.get((v, u)) or [])
+            note = "; ".join(fl + missing)
+            txt.append(f"{u} × {v}" + (f"<br>{note}" if note else ""))
         traces.append({"type": "scatter3d", "mode": "markers",
                        "name": f"{name} ({len(xs)})", "x": xs, "y": ys, "z": zs,
                        "text": txt, "hoverinfo": "text",

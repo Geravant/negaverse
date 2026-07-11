@@ -162,7 +162,10 @@ def _interactive_panel(out_dir: Path) -> str:
             'they could physically meet (from GO cellular-component).<br>'
             '&bull; <b>z — chemistry match:</b> how similar their surface hydrophobicity is.<br>'
             'Colours are the four regimes; hover any point for the two proteins and why it is '
-            'flagged.</p>')
+            'flagged. Pairs whose proteins lack compartment or hydrophobicity data (e.g. viral '
+            'proteins in the SARS-CoV-2 graph) sit on the base plane (y or z = 0) and are marked '
+            '<i>no compartment / no hydrophobicity data</i> in the hover — they are still placed '
+            'on the network-shape axis, which needs no annotation.</p>')
     if not lib:
         return (head + '<p class="cap"><i>The interactive view needs the Plotly library, which '
                 'is fetched once when the report is built online. Re-run the dashboard with an '
