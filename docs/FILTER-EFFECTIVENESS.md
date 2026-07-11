@@ -526,7 +526,8 @@ the effect is starker (safe 0.800 vs random 0.758; hard collapses to 0.410).
 the data worse. The apparent loss entered where the pipeline (a) ran on a starved 6k-edge graph
 and (b) replaced a representative negative sample with the 100% topology-hard tail. Give it
 coverage and select **safe** (or biology-re-ranked `stacked`) negatives, and the system is the
-best arm — and by far the cleanest. **Remaining root cause in the product:** `hard_train`
-(matching.py) only offers the hard-tail selection; a **safe / stacked selection mode** should be
-the default, and topology-selection should guard against sparse graphs where it degenerates into
-a hub filter (see the DRYAD diagnosis, §10).
+best arm — and by far the cleanest.
+
+**FIX SHIPPED.** `PipelineConfig.train_selection` (`matching.py::select_train`) now offers
+`hard | safe | stacked` and **defaults to `stacked`** (the winning arm). The pipeline no longer
+emits only the losing hard tail. `hard` is retained for ablation.
