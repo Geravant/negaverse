@@ -340,16 +340,34 @@ HuRI genes structure-based). All numbers below are `[measured]`.
 *random* negatives. Fixed in `benchmark.py` (real `_negaverse_stacked_negatives` +
 `_negaverse_verified_negatives`); the −0.006 above is the corrected, real number.
 
-**§7 verified-stack test — attempted, INCONCLUSIVE on HuRI.** The judge (Haiku) can't
-verify HuRI pairs: nodes are opaque **ENSG gene IDs**, and on the 40 hardest stacked
-pairs the judge returned 35 `uncertain` + 5 `safe_negative` and **0 `suspected_false_negative`**
-— it can't identify the proteins, so it never calls a hidden positive. Result: **0 dropped
-→ verified ≡ stacked**, so the drop-FN hypothesis can't be tested here. To run §7 for real
-the judge needs **gene-name/function context** (map ENSG→symbol before prompting) or a
-dataset with meaningful IDs (SARS-CoV-2 gene names *do* elicit `suspected_false_negative`
-verdicts — see `out/sars/literature_cards.json`). Machinery is in place
-(`negaverse_verified` strategy, drop-on-FN); the blocker is ID resolution for the prompt,
-not the pipeline.
+**§7 verified-stack test — RESOLVED (2026-07-11).** The earlier attempt was blocked
+because the judge saw only opaque **ENSG gene IDs**. Fixed: `build_ensg_symbol_map.py`
+now maps **8,163/8,245 HuRI nodes (99%)** to gene symbols (was 629/7.6%), wired into the
+judge via `LiteratureFilter(names=...)`. Three measurements now settle it:
+
+1. **The judge works — held-out detection (`eval_judge_holdout_recall.py`, k=150, seed 0).**
+   Labeled task, independent of the pipeline: POSITIVES = BioGRID∪IntAct interactions that
+   are HuRI non-edges (real hidden positives), NEGATIVES = random HuRI non-edges absent from
+   every DB. With gene symbols the judge flags **45.3%** of hidden positives vs only **16.0%**
+   of true negatives — **separation +29.3%** (and clears negatives as `safe_negative` 78% vs
+   49% on positives). With symbols the judge is a genuine hidden-positive detector.
+
+2. **Downstream AUROC can't see it, and that's expected.** Corrected `negaverse_verified`
+   (drop-and-backfill from the *stacked* set — the earlier version was confounded, training on
+   the least-confident tail vs stacked's most-confident head) drops ≈stacked. Dropping ~2% of
+   4,800 negatives is below the AUROC noise floor (seed variance ≈0.05); a 200-tree RF is
+   robust to a couple-percent relabel. Downstream AUROC is the wrong instrument for a small
+   relabel — hence measurement #1.
+
+3. **The pool-precision oracle is confounded by the veto (`eval_judge_flag_precision.py`).**
+   `KnownPositiveVeto` already loads BioGRID+IntAct (`rules/sources.yaml`) and strips every such
+   pair *before* the judge runs: **0%** of the hard pool is a BioGRID/IntAct interaction, vs
+   **1%** of random pairs. So any hidden positive left in the pool is one **no wired DB records**
+   — unvalidatable against those same DBs. The judge's role downstream of the veto is catching
+   *database-unrecorded* hidden positives; database-known ones are already gone.
+
+Net: the judge adds real signal (#1); the residual topology-hard harm that survives the veto is
+either genuine hardness or DB-unrecorded hidden positives — indistinguishable with current oracles.
 
 **§5.3 ESM2-rescue (`bench_features_ablation`, DRYAD):**
 
@@ -369,6 +387,29 @@ flip Δ positive — the hard set is contaminated with hidden positives (confirm
   `hydrophobicity_interface` (structure-aware) 34% · Δhard −0.032; pooled 0.287 vs-hard.
 - **DRYAD:** `coev:esm2_cosine` 34% · **0.773** vs-hard (the strong signal here);
   `hydrophobicity_interface` 14% · 0.522.
+
+**Per-rule Q2 — downstream, whole-stack (`bench_rule_ablation_downstream`, HuRI, spectral
+features, Negatome gold, 3 seeds).** The "final word" `bench_rules` defers to, run per rule:
+each graded rule is left out of the full stack (`veto+structured+topology+rules`) and the
+change in downstream link-predictor AUROC is measured. `Δ = AUROC(ALL) − AUROC(ALL−R)`.
+
+| config | mean AUROC | Δ |
+|---|---:|---:|
+| ALL graded rules | 0.7644 | — |
+| NONE (structured+topology only) | 0.7572 | layer worth **+0.0072** |
+| ALL − `colocalization_mismatch` | 0.7663 | **−0.0019** |
+| ALL − `hydrophobicity_interface` | 0.7653 | **−0.0008** |
+| ALL − `evolutionary_coupling_absence` | 0.7644 | 0.0000 (never fires on HuRI) |
+| ALL − `string_low_confidence_non_interaction` | 0.7644 | 0.0000 (never fires on HuRI) |
+
+→ **On HuRI, no graded rule earns its keep at Q2.** Every leave-one-out Δ (±0.002) is an order
+of magnitude *below* seed variance (per-seed ALL: 0.785 / 0.774 / 0.734, spread ≈0.05); the
+layer's +0.0072 is itself within noise. Sharpest point: `colocalization_mismatch` is the **Q1
+strongest** rule (Δhard −0.092) yet downstream **neutral-to-negative** (−0.0019) — separating
+from Negatome ≠ making better training negatives, the project's core thesis, now at stack level.
+Two rules have **zero HuRI coverage** (no ESM2-coupling / STRING data wired), so HuRI can't
+evaluate them — they need a dataset where they fire (DRYAD coev Q1 = 0.773). The base
+`structured+topology` already captures HuRI's usable signal.
 
 **Manifold flag, leakage-free (`eval_manifold_flags`):** on pairs topology calls SAFE,
 the manifold flag finds hidden positives at AUROC **0.68**; on a 5%-contaminated eval set
