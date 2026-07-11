@@ -20,7 +20,7 @@ from .candidates import generate_candidates
 from .fusion import fuse
 from .graph import TypedInteractionGraph
 from .ig.entropy_fusion import binary_entropy, entropy_weighted_fuse
-from .matching import Scored, degree_matched_eval, hard_train
+from .matching import Scored, degree_matched_eval, hard_train, select_train
 from .schema import NegativeRecord, StreamScore
 from .streams import Filter, Stage, build_filters
 
@@ -33,6 +33,17 @@ class PipelineConfig:
     n_train: int = 300
     max_pool: int = 200_000
     seed: int = 0
+    # how to pick the n_train emitted negatives from the scored pool:
+    #   "stacked" (default) — the topology-hard tail RE-RANKED by fused biology
+    #      confidence, keeping the pairs every independent signal agrees are true
+    #      negatives. Beats random downstream at proper coverage (FILTER-EFFECTIVENESS §11).
+    #   "safe" — the highest fused-confidence negatives across the WHOLE pool
+    #      (representative + clean); also beats/ties random.
+    #   "hard" — the topology-hardest tail alone (nearest the positive manifold).
+    #      Historically the default; the ONLY arm that loses to random (§11) — it is
+    #      hidden-positive enriched and, on sparse graphs, degenerates into a hub
+    #      filter (§10). Kept for ablation, not recommended.
+    train_selection: str = "stacked"
     weights: dict[str, float] | None = None
     # node type whose confounder distribution the eval set is matched to (the
     # leakage-prone confounder). None = match on both endpoints' summed statistic.
@@ -43,9 +54,11 @@ class PipelineConfig:
     # lowest-confidence fraction to flag as suspected false negatives and to route
     # to the GATED stage. Set to 0 to disable.
     false_negative_pct: float = 0.03
-    # max pairs sent to the (expensive) GATED filters; None = no cap. The tail
-    # of risky pairs beyond this cap stays unjudged (reported in risky_coverage).
-    gated_max: int | None = 40
+    # max pairs sent to the (expensive) GATED filters; None = no cap (judge the
+    # whole emitted contested tail — scales with n_eval+n_train). The verdict cache
+    # (streams/literature.py) makes re-runs cheap, so verify-everything is the
+    # default; set an int only to bound cost on a first, un-cached run.
+    gated_max: int | None = None
     sources_version: str = "sars-cov2-network/v1+negatome2"
     # fusion strategy: "mean" = fixed-weight mean (default, unchanged);
     # "entropy" = weight each stream by how decisive it is (IG Ch4, ig/).
@@ -180,7 +193,7 @@ def run_pipeline(
     mw = np.array([_match_weight(s) for s in kept], dtype=float)
     eval_set = degree_matched_eval(kept, mw, cfg.n_eval, seed=cfg.seed)
     eval_keys = {(s.u, s.v) for s in eval_set}
-    train_set = hard_train(kept, cfg.n_train, exclude=eval_keys)
+    train_set = select_train(kept, cfg.n_train, exclude=eval_keys, mode=cfg.train_selection)
 
     # signal disagreement: two independent streams conflicting is worth the
     # expensive review even when the fused confidence looks unremarkable — an

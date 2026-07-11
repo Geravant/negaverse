@@ -54,3 +54,27 @@ def hard_train(scored: list[Scored], n: int, exclude: set[tuple[str, str]]) -> l
     pool = [s for s in scored if (s.u, s.v) not in exclude]
     pool.sort(key=lambda s: s.hardness, reverse=True)
     return pool[:min(n, len(pool))]
+
+
+def select_train(scored: list[Scored], n: int, exclude: set[tuple[str, str]],
+                 mode: str = "stacked") -> list[Scored]:
+    """Pick the n emitted training negatives from the scored pool. See
+    PipelineConfig.train_selection for the modes and the evidence (FILTER-EFFECTIVENESS §11):
+
+      * "stacked" (default) — hard tail (top 4n by hardness) RE-RANKED by fused
+        confidence; keeps the pairs every signal agrees are true negatives. Best arm.
+      * "safe" — the n highest-confidence negatives across the whole pool.
+      * "hard" — the n hardest by topology alone (the historical default; loses to random).
+    """
+    pool = [s for s in scored if (s.u, s.v) not in exclude]
+    if mode == "hard":
+        pool.sort(key=lambda s: s.hardness, reverse=True)
+        return pool[:min(n, len(pool))]
+    if mode == "safe":
+        pool.sort(key=lambda s: s.confidence, reverse=True)
+        return pool[:min(n, len(pool))]
+    if mode == "stacked":
+        hard = sorted(pool, key=lambda s: s.hardness, reverse=True)[:max(4 * n, n)]
+        hard.sort(key=lambda s: s.confidence, reverse=True)
+        return hard[:min(n, len(hard))]
+    raise ValueError(f"unknown train_selection mode: {mode!r} (want hard|safe|stacked)")
