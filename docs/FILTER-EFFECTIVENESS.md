@@ -246,15 +246,36 @@ so blending it in drags the mixture toward random. The mixture would only pay of
 
 **Hidden-positive injection backtest (`--injection-test`).** Inject K real interactions that
 are absent from the training graph (veto-bypassed = truly hidden), measure the fraction each
-arm wrongly selects as a negative. This tests the exact failure mode negaverse claims to solve.
+arm wrongly selects as a negative, AND the downstream AUROC damage under each learner. This
+tests the exact failure mode negaverse claims to solve. The **selection rate is model-independent**
+(it precedes the learner); the AUROC columns show whether the contamination it selects actually
+damages the model — checked under both RF and LightGBM (3 seeds).
 
-| arm | HuRI hidden-pos selected | DRYAD |
-|---|---:|---:|
-| `random_veto` | 8.3 % | 0.7 % |
-| **`topology_hard`** | **74.2 %** | **64.4 %** |
-| `topology_safe` | 0.1 % | 0.0 % |
-| **`stacked`** | 0.3 % | 0.0 % |
-| `counterfactual` | 47.6 % | 5.5 % |
+*HuRI 20k:*
+
+| arm | hidden-pos selected | AUROC (RF) | AUROC (LGBM) |
+|---|---:|---:|---:|
+| `random_veto` | 8.2 % | 0.862 | 0.674 |
+| **`topology_hard`** | **74.8 %** | **0.385** | **0.359** |
+| `topology_safe` | 0.1 % | 0.865 | 0.851 |
+| **`stacked`** | 0.4 % | 0.869 | 0.803 |
+| `counterfactual` | 47.7 % | 0.792 | 0.446 |
+
+*DRYAD:*
+
+| arm | hidden-pos selected | AUROC (RF) | AUROC (LGBM) |
+|---|---:|---:|---:|
+| `random_veto` | 0.6 % | 0.625 | 0.563 |
+| **`topology_hard`** | **64.3 %** | 0.328 | 0.270 |
+| `topology_safe` | 0.0 % | 0.658 | 0.613 |
+| **`stacked`** | 0.1 % | 0.658 | 0.609 |
+| `counterfactual` | 5.0 % | 0.568 | 0.500 |
+
+**Model-robust, and *stronger* under LGBM.** The ordering is identical under both learners:
+`topology_hard`'s 65–75 % contamination makes it catastrophic (AUROC 0.27–0.39) while `stacked`/
+`safe` (~0 % contamination) stay top. Notably **LightGBM is *more* damaged by the contamination**
+than RF (counterfactual 0.79→0.45; every contaminated arm drops further) — boosting amplifies the
+mislabeled-negative harm, so the case for the clean arms is stronger, not weaker, under LGBM.
 
 → **The old default (`topology_hard`) actively selects ~3 of every 4 hidden positives** — direct,
 scale-verified proof that the L3-hard tail is where hidden positives concentrate. **The shipped
