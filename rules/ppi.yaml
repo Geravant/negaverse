@@ -15,62 +15,68 @@
     interact, so a non-edge between them is a safe negative.
   source: "GO cellular_component"
 
-- id: hydrophobicity_mismatch
+- id: hydrophobicity_interface
   modality: ppi
   applies_to: [protein, protein]
-  when: "a.surface_hydrophobicity - b.surface_hydrophobicity > 0.12 or b.surface_hydrophobicity - a.surface_hydrophobicity > 0.12"
+  when: "a.surface_hydrophobicity > 0.44 or b.surface_hydrophobicity > 0.44"
   effect: safer_negative
-  weight: 0.3                         # deliberately low — weak signal (see below)
-  flag: hydrophobicity_mismatch
+  weight: 0.5                       # empirically calibrated; see rationale
+  flag: hydrophobicity_interface_calibrated
   rationale: >
-    Interacting proteins tend to share biophysical context (both membrane-
-    associated or both soluble), so a large mismatch in mean surface
-    hydrophobicity makes a non-edge a somewhat safer negative. NOTE this is a
-    weak whole-protein proxy, not interface complementarity: on HuRI the mean
-    Kyte-Doolittle hydrophobicity separates real edges from non-edges at only
-    AUROC ~0.55 (dissimilarity direction). At |Δh|>0.12 non-edges are ~1.6x
-    enriched over edges — hence low weight. A proper interface-hydrophobicity
-    feature needs surface/patch-resolved data we don't yet have.
-  source: "Kyte-Doolittle mean (scripts/compute_hydrophobicity.py); threshold 0.12 calibrated on HuRI edge-vs-nonedge enrichment"
-
-- id: functional_process_mismatch
-  modality: ppi
-  applies_to: [protein, protein]
-  when: "disjoint(a.processes, b.processes)"
-  effect: safer_negative
-  weight: 0.3                         # low — weak signal (see below)
-  flag: different_process
-  rationale: >
-    Two proteins annotated to entirely non-overlapping GO biological processes
-    are somewhat less likely to be functional interaction partners. Independent
-    of both graph topology and subcellular localization (GO biological_process,
-    not cellular_component). NOTE weak with EXACT-term matching: on HuRI 95% of
-    non-edges but also 88% of real edges are disjoint (interactors often share a
-    parent process, not the exact leaf term), so this only ~1.08x enriches and
-    separates at AUROC ~0.54. A GO-hierarchy semantic similarity would be
-    stronger — hence low weight until that's built.
-  source: "GO biological_process, GOA human GAF (scripts/build_go_process.py)"
-
-- id: no_shared_neighbors_low_expected_edge
-  modality: ppi
-  applies_to: [protein, protein]
-  when: "disjoint(a.neighbors, b.neighbors) and (a.degree * b.degree) / a.graph_two_m < 0.01"
-  effect: safer_negative
-  weight: 0.7                       # topology, no_overlap/easy_negative proxy: 0.7-0.9
-  rationale: >
-    Two proteins with no shared interactors and a configuration-model expected
-    edge count near zero are rarely adjacent in this network, so a non-edge
-    between them is a safer negative.
-  source: "TODO — threshold to confirm; mirrors negaverse/streams/topology.py::TopologyFilter"
+    Calibrated on DRYAD and UPNA-PPI (n=300/class;
+    scripts/calibrate_hydrophobicity_threshold.py) using structure-aware
+    surface_hydrophobicity (DSSP exposure + AlphaFold pLDDT masking over
+    Kyte-Doolittle). Real PPIs show LOWER exposed hydrophobicity than
+    non-interactions (AUROC 0.18–0.37 for the "low→interaction" direction),
+    so the rule instead triggers on HIGH mutual hydrophobicity. This aligns
+    with prior work showing interface hot spots are enriched in
+    aromatic/cation–π residues and have distinct core composition
+    (Bogan & Thorn 1998; Chakrabarti & Janin 2002). The calibration scores each
+    pair by max(h_a, h_b), so the deployed condition uses `or`, not `and`:
+    pairs where either protein already expose hydrophobic surface are more
+    likely to be engaged in true interactions, making low mutual
+    hydrophobicity a riskier negative. The 0.44 cutoff is the Youden’s J
+    optimum across datasets and splits (0.425–0.448), yielding negative
+    precision 0.54–0.80 and recall 0.47–0.76 for this max(h_a, h_b) > 0.44
+    condition. Wimley–White and SAP were tested but did not improve
+    performance.
+  source: >
+    Bogan & Thorn (1998) J Mol Biol 280:1–9.
+    Chakrabarti & Janin (2002) Proteins 47:334–343.
+    DRYAD (doi:10.5061/dryad.15dv41p84); UPNA-PPI
+    (github.com/alxndgb/UPNA-PPI).
 
 - id: evolutionary_coupling_absence
   modality: ppi
   applies_to: [protein, protein]
   when: "a.evolutionary_coupling_score_with_b < 0.1"
   effect: safer_negative
-  weight: 0.5                       # well-sampled orthologs: 0.5-0.7; conservative until MSA depth is checked
+  weight: 0.5                       # well-sampled orthologs: 0.5-0.7; conservative until calibrated
   rationale: >
     Proteins with no detectable co-evolution signal across well-sampled
     orthologs are less likely to form a conserved physical complex, making a
     non-edge a safer negative.
-  source: "TODO — EVcouplings threshold to confirm"
+  source: >
+    TODO — threshold/weight not yet calibrated. Method implemented: Evolutionary
+    Rate Covariation (Clark & Aquadro 2010) via RERconverge
+    (scripts/fetch_orthologs.py -> scripts/build_gene_alignments.py ->
+    scripts/estimate_phangorn_trees.R -> scripts/rerconverge_runner.R ->
+    scripts/compute_evolutionary_coupling.py), evaluated against EVcouplings
+    (rejected as impractical at this scale) and STRING's phylogenetic-profile
+    channels (too narrow: curation-gated, doesn't cover novel/non-STRING
+    proteins). scripts/calibrate_evolutionary_coupling_threshold.py runs
+    end-to-end (same DRYAD/UPNA-PPI benchmarks as hydrophobicity_interface) but
+    the real calibration pass hasn't been run yet.
+
+- id: string_low_confidence_non_interaction
+  modality: ppi
+  applies_to: [protein, protein]
+  when: "a.string_score_with_b < 0.15"
+  effect: safer_negative
+  weight: 0.55                      # database-confidence-score guidance: 0.5-0.6
+  rationale: >
+    STRING's physical-subnetwork confidence score aggregates evidence across
+    experiments, curation, co-expression, and text-mining; a pair scoring
+    below STRING's own reporting threshold has no supporting evidence in any
+    channel, making a non-edge a safer negative.
+  source: "STRING v12.0 (physical subnetwork), https://string-db.org/, combined_score < 0.15 (STRING's own lowest reporting cutoff)"
