@@ -315,3 +315,53 @@ python -m scripts.eval_esm2_manifold
 **Run order:** §3 per-filter Q1 → §4 per-filter Q2 → §5 combinations → §6 routing.
 Fill a ledger cell **only** from a committed run. A blank cell is more honest than
 a guessed one.
+
+---
+
+## 9. Measured run — 2026-07-11 (with Lucy's structure-aware hydrophobicity live)
+
+First full pass of the §8 suite, on real data. Lucy's calibrated
+`hydrophobicity_interface` now runs on structure-aware `surface_hydrophobicity`
+(DSSP + AlphaFold, `scripts/build_huri_surface_hydrophobicity.py`; 5,426/8,163
+HuRI genes structure-based). All numbers below are `[measured]`.
+
+**Q2 — the decision (`bench_negaverse_vs_random`, spectral features, gold negatives, 3 seeds):**
+
+| dataset | random | negaverse (topology-hard) | Δ | **stacked** | Δ |
+|---|---:|---:|---:|---:|---:|
+| HuRI  | 0.766 | 0.668 | **−0.097** | **0.765** | **−0.000** |
+| DRYAD | 0.688 | 0.676 | −0.012 | 0.688 | +0.000 |
+
+→ Topology-hard alone **fails** Q2; the full independent-signal stack (co-localization
++ structure-aware hydrophobicity + …) **erases the deficit to parity** but does not yet
+*beat* random. The §7 open question (does verifying + dropping suspected-FNs flip Δ > 0?)
+is still unrun.
+
+**§5.3 ESM2-rescue (`bench_features_ablation`, DRYAD):**
+
+| features | random | topo-hard | Δ |
+|---|---:|---:|---:|
+| graph (spectral) | 0.731 | 0.353 | −0.378 |
+| esm2 (sequence) | 0.913 | 0.778 | −0.135 |
+
+→ ESM2 features lift the baseline (0.73→0.91) and **halve** topo-hard harm, but don't
+flip Δ positive — the hard set is contaminated with hidden positives (confirms §7).
+
+**Axis independence (`eval_esm2_manifold`):** esm2↔spectral 0.19, esm2↔topology 0.16
+(independent); spectral↔topology 0.70 (redundant). Fused esm2+spectral+topology = 0.881.
+
+**Per-rule Q1 (`bench_rules`, coverage · sep-vs-Negatome-hard · leave-one-out Δhard):**
+- **HuRI:** `colocalization_mismatch` 32% · Δhard **−0.092** (biggest contributor);
+  `hydrophobicity_interface` (structure-aware) 34% · Δhard −0.032; pooled 0.287 vs-hard.
+- **DRYAD:** `coev:esm2_cosine` 34% · **0.773** vs-hard (the strong signal here);
+  `hydrophobicity_interface` 14% · 0.522.
+
+**Manifold flag, leakage-free (`eval_manifold_flags`):** on pairs topology calls SAFE,
+the manifold flag finds hidden positives at AUROC **0.68**; on a 5%-contaminated eval set
+it removed 210/460 injected positives (460→250) at a cost of 352 clean flags.
+
+**Real AF2-Multimer pDockQ (`convert_huintaf2`, published huintaf2 scores, no folding):**
+HuRI-vs-random **0.704**, Hu.MAP-vs-random 0.603 — the structural interface signal is real,
+which is *why* topology-hard pairs are so often hidden positives.
+
+Artifacts: `out/{rules_bench_huri,rules_bench_dryad,rules_bench_huintaf2,esm2_manifold_eval,manifold_flags_eval,af2_scores}.*` (gitignored).
