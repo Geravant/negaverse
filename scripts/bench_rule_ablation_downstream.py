@@ -66,8 +66,28 @@ def _auroc_for_negatives(train_pos, train_neg, featurize, Xte, yte, seed):
     return float(roc_auc_score(yte, clf.predict_proba(Xte)[:, 1]))
 
 
+def _load_huri():
+    g = load_huri_graph()
+    return g, load_negatome_in_ensembl_space(set(g.g.nodes()))
+
+
+def _load_dryad():
+    pos, neg = [], []
+    with open("local-docs/dryad-ppi/benchmarks/benchmarks/positives_and_negatives.tsv") as fh:
+        next(fh)
+        for line in fh:
+            pair, cat = line.rstrip("\n").split("\t")
+            a, b = pair.split("_")
+            (pos if cat == "positive" else neg).append((a, b))
+    nodes = {p for pr in pos + neg for p in pr}
+    g = TypedInteractionGraph.from_edges(
+        pos, {n: "protein" for n in nodes}, admissible_types=[("protein", "protein")], name="dryad")
+    return g, {frozenset(p) for p in neg}          # gold = DRYAD's own labeled negatives
+
+
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--dataset", choices=["huri", "dryad"], default="huri")
     ap.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2])
     ap.add_argument("--n", type=int, default=4000, help="#training negatives per config")
     ap.add_argument("--max-positives", type=int, default=6000)
@@ -75,18 +95,34 @@ def main():
     ap.add_argument("--emb-dim", type=int, default=32)
     args = ap.parse_args()
 
-    graph = load_huri_graph()
-    gold = load_negatome_in_ensembl_space(set(graph.g.nodes()))
+    graph, gold = (_load_dryad() if args.dataset == "dryad" else _load_huri())
+    gold_name = "DRYAD labeled" if args.dataset == "dryad" else "Negatome"
     rules = [r for r in load_rules()
              if r.modality == "ppi" and r.effect in ("safer_negative", "riskier_negative")]
     print("=" * 80)
-    print("Per-rule downstream ablation — HuRI, spectral features, GOLD (Negatome) test")
+    print(f"Per-rule downstream ablation — {args.dataset.upper()}, spectral features, "
+          f"GOLD ({gold_name}) test")
     print(f"graded ppi rules: {[r.id for r in rules]}")
     print(f"seeds={args.seeds}  n_train_neg={args.n}  gold={len(gold)}")
     print("=" * 80)
 
     node_type = {n: "protein" for n in graph.g.nodes()}
     nodes = list(graph.g.nodes())
+
+    # per-rule firing coverage on this dataset (so 'inert' is disambiguated from
+    # 'never fires' — a rule at 0% coverage can't be evaluated here, full stop)
+    from negaverse.streams.rules import RuleGradedFilter
+    _rng = np.random.default_rng(0)
+    _sample = [(nodes[_rng.integers(len(nodes))], nodes[_rng.integers(len(nodes))]) for _ in range(3000)]
+    coverage = {}
+    for r in rules:
+        f = RuleGradedFilter(rules=[r]); f.fit(graph)
+        coverage[r.id] = sum(1 for u, v in _sample if u != v and f.score(graph, u, v).value is not None) / len(_sample)
+    print("rule firing coverage (fraction of sampled candidate pairs the rule scores):")
+    for r in rules:
+        print(f"  {r.id:<42} {coverage[r.id]:6.1%}")
+    print("=" * 80)
+
     # configs: all rules, each leave-one-out, and none
     configs = {"ALL": rules, "NONE": []}
     for r in rules:
@@ -133,7 +169,10 @@ def main():
     print("  (Δ_downstream(R) = AUROC(ALL) − AUROC(ALL−R);  >0 => rule R helps the stack)")
     loo = sorted(((r.id, all_a - mean[f"-{r.id}"]) for r in rules), key=lambda kv: -kv[1])
     for rid, d in loo:
-        verdict = "helps" if d > 0.002 else ("HURTS" if d < -0.002 else "inert")
+        if coverage.get(rid, 0) == 0:
+            verdict = "NO COVERAGE (untestable here)"
+        else:
+            verdict = "helps" if d > 0.002 else ("HURTS" if d < -0.002 else "inert")
         print(f"  {'  -'+rid:<28}{mean['-'+rid]:>12.4f}{d:>+13.4f}  {verdict}")
     print("-" * 80)
     print(f"\n  graded-rule layer total worth (ALL − NONE) = {all_a - none_a:+.4f}")
