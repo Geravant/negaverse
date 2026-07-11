@@ -15,6 +15,8 @@ Degrades gracefully — no key / API error -> abstain, pipeline unaffected.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 from typing import Optional
 
@@ -24,6 +26,7 @@ from .base import Filter, Stage
 from .registry import register
 
 _PROVIDER_ENV = {"anthropic": "ANTHROPIC_API_KEY", "openrouter": "OPENROUTER_API_KEY"}
+_DEFAULT_CACHE = "local-docs/cache/llm_verdicts.jsonl"
 
 
 @register
@@ -32,16 +35,47 @@ class LiteratureFilter(Filter):
     stage = Stage.GATED
 
     def __init__(self, enabled: bool = False, provider: str = "auto",
-                 model: Optional[str] = None, max_tokens: int = 1024, votes: int = 5):
+                 model: Optional[str] = None, max_tokens: int = 1024, votes: int = 5,
+                 cache_path: str = _DEFAULT_CACHE):
         self.enabled = enabled
         self.provider = provider
         self.model = model
         self.max_tokens = max_tokens
         self.votes = votes                       # best-of-N majority vote (1 = single call)
+        self.cache_path = cache_path
         self._reasoner = None
         self._resolved: Optional[str] = None
         self._initialized = False
-        self._cache: dict[frozenset, StreamScore] = {}
+        self._pcache: Optional[dict[str, dict]] = None   # feature-hash -> verdict record
+
+    # --- persistent, feature-hashed cache (reused across runs) -----------
+    def _feature_key(self, graph: TypedInteractionGraph, u: str, v: str) -> str:
+        """Content hash of exactly what the judge sees for this pair — so an
+        identical pair+context reuses the verdict, and a changed context re-judges."""
+        a, b = sorted((u, v))
+        feats = {"a": a, "b": b,
+                 "a_type": graph.node_type.get(a), "b_type": graph.node_type.get(b),
+                 "a_deg": graph.degree(a), "b_deg": graph.degree(b),
+                 "model": self.model, "votes": self.votes}
+        return hashlib.sha1(json.dumps(feats, sort_keys=True).encode()).hexdigest()
+
+    def _load_cache(self) -> None:
+        self._pcache = {}
+        if os.path.exists(self.cache_path):
+            with open(self.cache_path) as fh:
+                for line in fh:
+                    try:
+                        r = json.loads(line)
+                        self._pcache[r["key"]] = r
+                    except Exception:
+                        continue
+
+    def _store_cache(self, key: str, sc: StreamScore) -> None:
+        rec = {"key": key, "value": sc.value, "flags": sc.flags, "evidence": sc.evidence}
+        self._pcache[key] = rec
+        os.makedirs(os.path.dirname(self.cache_path) or ".", exist_ok=True)
+        with open(self.cache_path, "a") as fh:              # append-only, O(1)
+            fh.write(json.dumps(rec) + "\n")
 
     def _resolve_provider(self) -> Optional[str]:
         if self.provider == "auto":
@@ -76,20 +110,23 @@ class LiteratureFilter(Filter):
 
     def score(self, graph: TypedInteractionGraph, u: str, v: str) -> StreamScore:
         self._ensure()
-        if self._reasoner is None:
+        if self._pcache is None:
+            self._load_cache()
+        key = self._feature_key(graph, u, v)
+        if key in self._pcache:                          # reuse a prior run's verdict
+            r = self._pcache[key]
+            return StreamScore(self.name, value=r["value"],
+                               flags=list(r.get("flags") or []),
+                               evidence=dict(r.get("evidence") or {}))
+        if self._reasoner is None:                       # no key/disabled -> abstain (uncached)
             return self._skip("disabled" if not self.enabled else "no_api_key")
-        key = frozenset((u, v))
-        if key in self._cache:
-            return self._cache[key]
 
         ctx = {"u_type": graph.node_type.get(u), "v_type": graph.node_type.get(v),
                "u_degree": graph.degree(u), "v_degree": graph.degree(v)}
         try:
             card = self._reasoner.reason_vote(u, v, ctx, votes=self.votes)
         except Exception:
-            sc = self._skip("llm_error")
-            self._cache[key] = sc
-            return sc
+            return self._skip("llm_error")               # transient — do not cache
 
         verdict, conf = card.verdict, float(card.confidence)
         flags: list[str] = []
@@ -111,7 +148,7 @@ class LiteratureFilter(Filter):
                       "votes": card.n_votes, "agreement": card.agreement,
                       "vote_counts": card.vote_counts},
         )
-        self._cache[key] = sc
+        self._store_cache(key, sc)
         return sc
 
 

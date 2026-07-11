@@ -13,11 +13,12 @@ from typing import Literal, Optional
 
 Provider = Literal["anthropic", "openrouter"]
 
-# Sensible per-provider default models. Anthropic's default follows Anthropic's
-# own guidance (Opus 4.8); OpenRouter routes the same family via its slug.
+# Per-provider default judge model. Haiku for now — cheap/fast, which suits the
+# verify-every-hard-negative volume (bump to a stronger model via --model or here
+# when verdict quality matters more than throughput).
 DEFAULT_MODELS: dict[str, str] = {
-    "anthropic": "claude-opus-4-8",
-    "openrouter": "anthropic/claude-opus-4-8",
+    "anthropic": "claude-haiku-4-5-20251001",
+    "openrouter": "anthropic/claude-haiku-4.5",
 }
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"

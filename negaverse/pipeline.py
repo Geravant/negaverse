@@ -43,9 +43,11 @@ class PipelineConfig:
     # lowest-confidence fraction to flag as suspected false negatives and to route
     # to the GATED stage. Set to 0 to disable.
     false_negative_pct: float = 0.03
-    # max pairs sent to the (expensive) GATED filters; None = no cap. The tail
-    # of risky pairs beyond this cap stays unjudged (reported in risky_coverage).
-    gated_max: int | None = 40
+    # max pairs sent to the (expensive) GATED filters; None = no cap (judge the
+    # whole emitted contested tail — scales with n_eval+n_train). The verdict cache
+    # (streams/literature.py) makes re-runs cheap, so verify-everything is the
+    # default; set an int only to bound cost on a first, un-cached run.
+    gated_max: int | None = None
     sources_version: str = "sars-cov2-network/v1+negatome2"
     # fusion strategy: "mean" = fixed-weight mean (default, unchanged);
     # "entropy" = weight each stream by how decisive it is (IG Ch4, ig/).
