@@ -1,11 +1,19 @@
-"""Layer 6 — fusion of the scoring streams into one calibrated confidence
+"""Layer 6 — fusion of the scoring streams into one heuristic score
 (ARCHITECTURE.md §5 Fusion).
 
+⚠️ NOT a calibrated probability. `confidence` here is an UNCALIBRATED weighted MEAN
+of the non-abstaining streams' heuristic sub-scores. It is a monotone ranking
+signal, not P(true negative). Two known consequences, both measured
+(docs/FILTER-EFFECTIVENESS.md): a mean *dilutes* agreement (two streams that both
+say "safe", e.g. 1.0 and 0.75, fuse to 0.875 < 1.0 instead of reinforcing), and the
+value cannot be read as a probability or thresholded across datasets. Proper
+cross-fitted calibration + a lower-confidence bound (the quantity that should
+*authorise* a negative label) is the calibration arm; until then treat this as a
+score, not a confidence.
+
 Weighted combine of the streams that did *not* abstain; a hard veto from any
-stream drops the pair entirely (never emitted as a negative). Per-stream weights
-are configurable and, once gold anchors are wired in (Negatome, Layer 4), fit
-against them. Each fused output keeps the raw sub-scores so a user can see *why*
-a pair is a negative.
+stream drops the pair entirely (never emitted as a negative). Each fused output
+keeps the raw sub-scores so a user can see *why* a pair is a negative.
 """
 from __future__ import annotations
 

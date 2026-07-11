@@ -64,10 +64,12 @@ from negaverse.streams.rules import RuleGradedFilter
 ARMS = ["random_raw", "random_veto", "topology_hard", "topology_safe", "stacked"]
 
 
-def _score_pool(train_pos, max_pool, seed, full_pos_set):
-    """One frozen candidate pool, each pair scored ONCE. Returns dicts with
-    confidence (mean fuse of graded values), hardness (topology-risk percentile),
-    and a `dirty` flag (pair is actually a positive somewhere — veto target)."""
+def _score_pool(train_pos, max_pool, seed, full_pos_set, exclude=None):
+    """One frozen candidate pool, each pair scored ONCE, on the TRAIN graph only.
+    `exclude` (held-out test-positive pairs, as frozensets) is removed from the
+    candidate pool so a test positive can never be selected as a training negative.
+    The selector never sees a test edge — no leakage."""
+    exclude = exclude or set()
     nodes = {p for e in train_pos for p in e}
     tg = TypedInteractionGraph.from_edges(
         list(train_pos), {n: "protein" for n in nodes},
@@ -80,7 +82,8 @@ def _score_pool(train_pos, max_pool, seed, full_pos_set):
     for f in [veto, structured, topology] + list(per_rule.values()):
         f.fit(tg)
 
-    cand = generate_candidates(tg, max_pool=max_pool, seed=seed)
+    cand = [(u, v) for (u, v) in generate_candidates(tg, max_pool=max_pool, seed=seed)
+            if frozenset((u, v)) not in exclude]
     rows, risks = [], []
     for (u, v) in cand:
         vetoed = bool(veto.score(tg, u, v).veto)                # known positive (DB or graph)
@@ -152,16 +155,12 @@ def _hits(y, s, k, positive=True):
     return float(np.mean(y[idx] == (1 if positive else 0)))
 
 
-def _evaluate(train_pos, train_neg, nodes, gold_test, seed, models, emb_dim=32):
-    """Returns {model_kind: metric_dict}. Same features/split across models —
-    only the learner changes (model-sensitivity)."""
-    rng = np.random.default_rng(seed)
-    tp = list(train_pos)
-    n_test = int(len(tp) * 0.2)
-    rng.shuffle(tp)
-    test_pos, tr_pos = tp[:n_test], tp[n_test:]
+def _evaluate(tr_pos, test_pos, train_neg, nodes, gold_test, seed, models, emb_dim=32):
+    """Returns {model_kind: metric_dict}. The train/test positive split is fixed by
+    the caller (fit ONCE, before pool scoring) — this only trains + scores. Same
+    features/split across models; only the learner changes (model-sensitivity)."""
     n_bal = min(len(test_pos), len(gold_test))
-    test_pos, test_neg = test_pos[:n_bal], list(gold_test)[:n_bal]
+    test_pos, test_neg = list(test_pos)[:n_bal], list(gold_test)[:n_bal]
 
     train_G = nx.Graph(); train_G.add_nodes_from(nodes); train_G.add_edges_from(tr_pos)
     emb, idx, _ = _spectral_embeddings(train_G, nodes, emb_dim, seed)
@@ -240,6 +239,16 @@ def main():
           f"{'  [RULE ABLATION]' if args.rule_ablation else ''}")
     print(f"full edges={len(all_pos)}  nodes={len(nodes)}  max_positives={args.max_positives or 'ALL'}  "
           f"gold={len(gold)}  seeds={args.seeds}  rules={[r.id for r in _RULES]}")
+    # fail-closed certification: were the negatives actually screened against external DBs?
+    _v = build_filters("ppi", ["known_positive_veto"])[0]
+    _v.fit(TypedInteractionGraph.from_edges(
+        all_pos, {n: "protein" for n in nodes}, admissible_types=[("protein", "protein")], name="cert"))
+    _c = _v.certification()
+    print(f"veto certification: {'CERTIFIED' if _c['certified'] else '*** UNCERTIFIED ***'}  "
+          f"loaded={_c['loaded']}  missing={_c['missing']}")
+    if not _c["certified"]:
+        print("  WARNING: no external known-positive DB screened this pool — hidden-positive "
+              "leakage from BioGRID/IntAct is NOT ruled out. Purity numbers below are graph-only.")
     print("=" * 92)
 
     # metrics[(arm, model)][metric] = [per-seed values]
@@ -252,10 +261,15 @@ def main():
         pos = all_pos
         if args.max_positives and len(pos) > args.max_positives:
             pos = [pos[i] for i in rng.choice(len(pos), size=args.max_positives, replace=False)]
+        # SPLIT ONCE, before scoring — the selector fits on train edges only (no leakage)
+        pos = [pos[i] for i in rng.permutation(len(pos))]
+        n_test = int(len(pos) * 0.2)
+        test_pos, tr_pos = pos[:n_test], pos[n_test:]
+        test_excl = {frozenset(p) for p in test_pos}
         gold_s = [p for p in gold if frozenset(p) not in full_pos_set]
         rng.shuffle(gold_s)
-        pool = _score_pool(pos, args.max_pool, seed, full_pos_set)   # ONE pool, all arms share it
-        n_neg = int(len(pos) * 0.8)
+        pool = _score_pool(tr_pos, args.max_pool, seed, full_pos_set, exclude=test_excl)
+        n_neg = int(len(tr_pos))                                  # one negative per training positive
         for arm in arm_list:
             sp = spec[arm]
             if sp == "builtin":
@@ -268,7 +282,7 @@ def main():
                 continue
             dirty = sum(1 for u, v in neg if frozenset((u, v)) in full_pos_set)
             purity[arm].append(dirty)
-            per_model = _evaluate(pos, neg, nodes, gold_s, seed, args.models)
+            per_model = _evaluate(tr_pos, test_pos, neg, nodes, gold_s, seed, args.models)
             for m, res in per_model.items():
                 for k, val in res.items():
                     if k in metrics[(arm, m)]:
