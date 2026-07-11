@@ -329,13 +329,27 @@ HuRI genes structure-based). All numbers below are `[measured]`.
 
 | dataset | random | negaverse (topology-hard) | Δ | **stacked** | Δ |
 |---|---:|---:|---:|---:|---:|
-| HuRI  | 0.766 | 0.668 | **−0.097** | **0.765** | **−0.000** |
-| DRYAD | 0.688 | 0.676 | −0.012 | 0.688 | +0.000 |
+| HuRI  | 0.786 | 0.689 | **−0.097** | **0.780** | **−0.006** |
 
-→ Topology-hard alone **fails** Q2; the full independent-signal stack (co-localization
-+ structure-aware hydrophobicity + …) **erases the deficit to parity** but does not yet
-*beat* random. The §7 open question (does verifying + dropping suspected-FNs flip Δ > 0?)
-is still unrun.
+→ Topology-hard alone **fails** Q2 (−0.097); the full independent-signal stack
+(co-localization + structure-aware hydrophobicity, fused-confidence selection) nearly
+**erases the deficit** (−0.006, seed 0) but does not yet *beat* random.
+
+**CORRECTION.** An earlier pass reported stacked ≈ −0.000, but that was an **artifact**:
+`run_benchmark` had no `negaverse_stacked` branch, so the strategy fell through to
+*random* negatives. Fixed in `benchmark.py` (real `_negaverse_stacked_negatives` +
+`_negaverse_verified_negatives`); the −0.006 above is the corrected, real number.
+
+**§7 verified-stack test — attempted, INCONCLUSIVE on HuRI.** The judge (Haiku) can't
+verify HuRI pairs: nodes are opaque **ENSG gene IDs**, and on the 40 hardest stacked
+pairs the judge returned 35 `uncertain` + 5 `safe_negative` and **0 `suspected_false_negative`**
+— it can't identify the proteins, so it never calls a hidden positive. Result: **0 dropped
+→ verified ≡ stacked**, so the drop-FN hypothesis can't be tested here. To run §7 for real
+the judge needs **gene-name/function context** (map ENSG→symbol before prompting) or a
+dataset with meaningful IDs (SARS-CoV-2 gene names *do* elicit `suspected_false_negative`
+verdicts — see `out/sars/literature_cards.json`). Machinery is in place
+(`negaverse_verified` strategy, drop-on-FN); the blocker is ID resolution for the prompt,
+not the pipeline.
 
 **§5.3 ESM2-rescue (`bench_features_ablation`, DRYAD):**
 

@@ -148,6 +148,53 @@ def _negaverse_bio_negatives(graph, train_pos, node_type, n, seed, max_pool):
     return bio[:n]
 
 
+def _negaverse_stacked_negatives(graph, train_pos, node_type, n, seed, max_pool):
+    """Topology-hard tail ranked by FUSED confidence across every independent
+    signal (structured + topology + rules), keeping the pairs the combination most
+    agrees are true negatives. The real stacked strategy (not a fall-through)."""
+    tg = TypedInteractionGraph.from_edges(
+        train_pos, dict(node_type), admissible_types=[("protein", "protein")], name="bench-train")
+    cfg = PipelineConfig(modality="ppi", n_eval=0, n_train=max(4 * n, n), max_pool=max_pool,
+                         seed=seed, filters=["known_positive_veto", "structured", "topology", "rules"])
+    res = run_pipeline(tg, cfg)
+    hard = [r for r in res.records if r.mode == "train"]
+    hard.sort(key=lambda r: r.confidence, reverse=True)
+    return [(r.u, r.v) for r in hard[:n]]
+
+
+def _negaverse_verified_negatives(graph, train_pos, node_type, n, seed, max_pool,
+                                  judge_cap=None):
+    """§7 test: stacked-hard negatives, then the LLM judge (Haiku) VERIFIES each and
+    the pairs it calls `suspected_false_negative` (likely hidden positives) are
+    DROPPED, not just flagged. Over-samples so n clean pairs survive. judge_cap
+    bounds LLM cost (judge at most this many, hardest-first)."""
+    from ..streams import LiteratureFilter
+    tg = TypedInteractionGraph.from_edges(
+        train_pos, dict(node_type), admissible_types=[("protein", "protein")], name="bench-train")
+    cfg = PipelineConfig(modality="ppi", n_eval=0, n_train=max(4 * n, n), max_pool=max_pool,
+                         seed=seed, filters=["known_positive_veto", "structured", "topology", "rules"])
+    res = run_pipeline(tg, cfg)
+    hard = [r for r in res.records if r.mode == "train"]
+    hard.sort(key=lambda r: r.confidence)          # least-confident (hardest) first — judge these
+    lit = LiteratureFilter(enabled=True, provider="auto", votes=1)
+    lit.fit(tg)
+    kept, judged, dropped = [], 0, 0
+    for r in hard:
+        if len(kept) >= n:
+            break
+        if judge_cap is not None and judged >= judge_cap:
+            kept.append((r.u, r.v))                # budget spent — keep the rest unjudged
+            continue
+        sc = lit.score(tg, r.u, r.v); ev = sc.evidence or {}
+        judged += 1
+        if ev.get("gated_status") == "reviewed" and ev.get("verdict") == "suspected_false_negative":
+            dropped += 1
+            continue                                # DROP the hidden positive
+        kept.append((r.u, r.v))
+    print(f"    [verified] judged {judged}, dropped {dropped} suspected-FN, kept {len(kept)}")
+    return kept[:n]
+
+
 def run_benchmark(graph: TypedInteractionGraph, seed: int = 0, test_frac: float = 0.2,
                   max_positives: int | None = 10_000, max_pool: int = 40_000,
                   strategies=("random", "negaverse"),
@@ -215,6 +262,12 @@ def run_benchmark(graph: TypedInteractionGraph, seed: int = 0, test_frac: float 
         elif strat == "negaverse_bio":
             train_neg = _negaverse_bio_negatives(graph, train_pos, node_type,
                                                  len(train_pos), seed, max_pool)
+        elif strat == "negaverse_stacked":
+            train_neg = _negaverse_stacked_negatives(graph, train_pos, node_type,
+                                                     len(train_pos), seed, max_pool)
+        elif strat == "negaverse_verified":
+            train_neg = _negaverse_verified_negatives(graph, train_pos, node_type,
+                                                      len(train_pos), seed, max_pool, judge_cap=800)
         else:
             train_neg = _random_nonedges(nodes, pos_set, len(train_pos), rng, exclude=test_excl)
         if not train_neg:
