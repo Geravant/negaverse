@@ -35,12 +35,15 @@ class _RuleFilterBase(Filter):
 
     def __init__(self, rules: list[Rule] | None = None,
                  rules_dir: str | Path = RULES_DIR,
-                 annotations: dict[str, dict] | None = None) -> None:
+                 annotations: dict[str, dict] | None = None,
+                 pair_annotations: dict[str, dict] | None = None) -> None:
         self._rules_arg = rules
         self._rules_dir = rules_dir
         self._ann_arg = annotations
+        self._pair_ann_arg = pair_annotations
         self._rules: list[Rule] = []
         self._ann: dict[str, dict] = {}
+        self._pair_ann: dict[str, dict] = {}
 
     def fit(self, graph: TypedInteractionGraph) -> None:
         rules = self._rules_arg if self._rules_arg is not None else load_rules(self._rules_dir)
@@ -51,6 +54,11 @@ class _RuleFilterBase(Filter):
             from ..io.annotations import build_annotation_table
             base = build_annotation_table()
         self._ann = self._augment_with_graph(base, graph)
+        if self._pair_ann_arg is not None:
+            self._pair_ann = self._pair_ann_arg
+        else:
+            from ..io.annotations import build_pair_annotation_table
+            self._pair_ann = build_pair_annotation_table()
 
     @staticmethod
     def _augment_with_graph(base: dict[str, dict], graph: TypedInteractionGraph) -> dict[str, dict]:
@@ -69,9 +77,24 @@ class _RuleFilterBase(Filter):
 
     def _applicable(self, graph: TypedInteractionGraph, u: str, v: str):
         """Yield (rule, rec_first, rec_second) for rules whose applies_to matches
-        this pair's node types, binding entities in the declared order."""
+        this pair's node types, binding entities in the declared order.
+
+        Pairwise fields (e.g. `evolutionary_coupling_score_with_b`) depend on
+        which specific partner is being scored, so they can't live in the
+        per-node `self._ann` cache — they're merged onto a *copy* of u's record
+        fresh on every call, keyed to this exact (u, v) pair. Copying (not
+        mutating `self._ann[u]` in place) is required: node u appears in many
+        other pairs across other calls, and mutating the shared cached dict
+        would leak this pair's value onto unrelated future lookups for u."""
         tu, tv = graph.node_type.get(u), graph.node_type.get(v)
-        ru, rv = self._ann.get(u, {}), self._ann.get(v, {})
+        ru = dict(self._ann.get(u, {}))
+        rv = self._ann.get(v, {})
+        if self._pair_ann:
+            pair_key = frozenset((u, v))
+            for field, table in self._pair_ann.items():
+                val = table.get(pair_key)
+                if val is not None:
+                    ru[field] = val
         for rule in self._rules:
             t1, t2 = rule.applies_to
             if tu == t1 and tv == t2:

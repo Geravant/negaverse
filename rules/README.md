@@ -47,28 +47,49 @@ and `b` (positional, in `applies_to` order); when the two `applies_to` types dif
 they are also bound by type name — so `pli` rules can say `protein.pocket_volume`
 and `ligand.volume`. A field absent from an entity's record → the rule abstains.
 
-**Annotations** (`negaverse/io/annotations.py`) are `dict[node -> dict[field -> value]]`,
-merged from whatever sources exist (currently `compartments` from GO cellular-component,
-plus `surface_hydrophobicity`, `pocket_volume`, `pocket_hydrophobicity`, and
-`pocket_polarity` — computed with `scripts/compute_surface_hydrophobicity.py` and
-`scripts/compute_pocket_descriptors.py` respectively, populated once someone runs
-them for a given graph's nodes). Add an annotation type = load it there under a new field name — true for fields
-sourced from external files/DBs. Graph-structural fields (`degree`, `neighbors`,
-`graph_two_m`) are different: they depend on whichever graph is loaded, but
-`build_annotation_table()` takes no graph argument today and its call sites don't
-pass one in, so those fields abstain until that wiring is added (see
-`AUTHORING.md`'s "Missing fields and staged rules").
+**Per-node annotations** (`negaverse/io/annotations.py::build_annotation_table()`) are
+`dict[node -> dict[field -> value]]`, merged from whatever sources exist (currently
+`compartments` from GO cellular-component, plus `surface_hydrophobicity`,
+`pocket_volume`, `pocket_hydrophobicity`, and `pocket_polarity` — computed with
+`scripts/compute_surface_hydrophobicity.py` and `scripts/compute_pocket_descriptors.py`
+respectively, populated once someone runs them for a given graph's nodes). Add a
+per-node annotation type = load it there under a new field name — true for fields
+sourced from external files/DBs.
+
+**Pairwise annotations** (`build_pair_annotation_table()`, same file) are a second,
+separate mechanism for fields whose value depends on *both* entities in a pair, not
+one node alone — e.g. `evolutionary_coupling_score_with_b`
+(`scripts/compute_evolutionary_coupling.py`). These load from
+`node_a<TAB>node_b<TAB>value` files and get merged onto the right entity's record
+per-pair, at score time, by `negaverse/streams/rules.py::_RuleFilterBase` — not
+onto the shared per-node cache, since the same node needs a different value
+depending on which partner it's being scored against.
+
+**Graph-structural fields** (`degree`, `neighbors`, `graph_two_m`) are a third kind:
+they depend on whichever graph is loaded, so they can't come from
+`build_annotation_table()` (which correctly takes no graph argument). Instead,
+`negaverse/streams/rules.py::_RuleFilterBase.fit()` merges them in from the live
+graph via `_augment_with_graph()` — so rules referencing them genuinely work in the
+real pipeline today (not staged/pending). The one place they'll always show as
+missing is `scripts/validate_rules.py`, which checks annotations standalone with no
+graph to augment with — that's a property of the standalone checker, not of whether
+a topology rule works in production.
 
 ## Status
 
 The generic loader + evaluator + `RuleGradedFilter`/`RuleVetoFilter` are **built**:
-every rule here becomes a filter automatically, no code. 8 rules exist across
+every rule here becomes a filter automatically, no code. 7 rules exist across
 `ppi.yaml`/`pli.yaml`; `colocalization_mismatch` is live wherever GO
 cellular-component annotations are populated. Most of the rest abstain because
 their annotation field is genuinely unsourced (`TODO` in `source`) or simply
 hasn't been computed yet for the graph in question — `hydrophobicity_interface`
 is calibrated and has a real loader (`scripts/compute_surface_hydrophobicity.py`)
-but still abstains until someone runs it for their graph's nodes. The topology
-rule (`no_shared_neighbors_low_expected_edge`) abstains for a different reason:
-it needs the `build_annotation_table()` graph-wiring gap fixed first (see
-above), not just data.
+but still abstains until someone runs it for their graph's nodes.
+`evolutionary_coupling_absence` similarly has a real, implemented pipeline
+(`scripts/compute_evolutionary_coupling.py`, Evolutionary Rate Covariation via
+RERconverge) but hasn't been calibrated against gold-standard PPI data yet — its
+threshold is still a placeholder. (A topology rule mirroring `TopologyFilter`'s
+`no_overlap` case, `no_shared_neighbors_low_expected_edge`, previously existed here
+and was removed: `TopologyFilter` already computes that exact signal more
+rigorously as an independent stream, so the YAML rule only double-counted it rather
+than adding new evidence — see `AUTHORING.md` Step 5.)

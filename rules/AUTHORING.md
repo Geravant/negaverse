@@ -35,8 +35,15 @@ Examples:
   regulation rather than a robust physical interaction).
 - If two proteins share no common neighbors and their expected edge count under
   the configuration-model baseline (`deg(a)·deg(b) / 2·|E|`) is small → **safer**
-  negative (matches the `no_overlap`/`easy_negative` case in
-  `negaverse/streams/topology.py::TopologyFilter`).
+  negative — but this is *already* the `no_overlap`/`easy_negative` case
+  `negaverse/streams/topology.py::TopologyFilter` floors at `value ≈ 0.98`
+  (and more rigorously: it also checks L3 length-3 paths, not just common
+  neighbors). Don't also encode this as a YAML rule — `TopologyFilter` and the
+  rule engine are independent streams that both feed the same combined score,
+  so a YAML rule duplicating this exact condition would double-count one
+  topological fact rather than add new evidence. (An earlier version of this
+  project *did* ship such a rule, `no_shared_neighbors_low_expected_edge`; it
+  was removed for exactly this reason — see Step 5's redundancy note.)
 - If STRING's physical-subnetwork confidence for a pair falls below STRING's
   own minimum reporting threshold (`combined_score < 0.15`) → **safer** negative
   (PPI) — the database finds no supporting evidence in any of its channels
@@ -88,7 +95,7 @@ where they live, and how they are intended to be computed or loaded.
 |------------------------------------|----------|-------------------------------------------------------------------------------------------------------------|
 | `compartments`                    | protein  | Set of GO cellular-component terms, loaded from TSV as in `localization.py` (one node → comma-separated compartments). |
 | `surface_hydrophobicity`          | protein  | Two-tier Kyte-Doolittle score (`scripts/compute_surface_hydrophobicity.py`): Tier 1 aggregates over solvent-exposed (DSSP RSA), ordered (AlphaFold pLDDT) residues when a confident structure exists; Tier 2 falls back to a whole-sequence mean otherwise. See `rules/ppi.yaml`'s `hydrophobicity_interface` for the calibrated (and direction-reversed) threshold. |
-| `evolutionary_coupling_score_with_b` | protein  | Score on `a` for its coupling with `b`, from sequence covariation (e.g. EVcouplings; aggregated and normalized to `[0,1]`). |
+| `evolutionary_coupling_score_with_b` | protein (pairwise) | Evolutionary Rate Covariation between `a` and `b` (`scripts/compute_evolutionary_coupling.py`, RERconverge) — Pearson correlation of their relative-evolutionary-rate vectors across a fixed vertebrate species panel. Genuinely pairwise (loaded via `build_pair_annotation_table()`, not the per-node table); not yet calibrated. |
 | `string_score_with_b`             | protein  | Score on `a` for its STRING (v12.0, physical subnetwork) `combined_score` with `b`, normalized to `[0,1]` (raw score ÷ 1000). STRING's own reporting cutoff is 0.15 — it doesn't return pairs below that by default. |
 | `interface_conservation`          | protein  | Mean conservation over interface residues, derived from MSAs (Consurf/entropy) plus interface annotation (structure/docking/prediction). |
 | `degree`                          | protein  | Graph degree of the protein node in the PPI / heterogeneous network.                                       |
@@ -133,11 +140,44 @@ Additional fields you **plan** to use and how to compute them:
     for a spatial-patch method). See the calibration script's docstring for
     the full three-way comparison.
 
-- `a.evolutionary_coupling_score_with_b`  
-  - Use tools such as EVcouplings on sequence MSAs to compute evolutionary
-    coupling scores between the two proteins (or domains). Aggregate contact
-    probabilities or coupling metrics into a pair-level score (e.g. mean or max
-    over interface positions), normalized to `[0, 1]`.
+- `a.evolutionary_coupling_score_with_b` — **implemented, not yet calibrated**.
+  EVcouplings/EVcomplex (residue-level direct-coupling analysis) was evaluated
+  and rejected: its binaries do install, but real use needs a large jackhmmer
+  reference database and per-pair species-matched ortholog alignments with
+  strict quality gating — hours of compute per family and a high abstention
+  rate, not viable at PPI-benchmark calibration scale. Implemented instead:
+  **Evolutionary Rate Covariation (ERC)** — Clark & Aquadro (2010); the same
+  method behind the mitonuclear-coevolution literature (Zhang et al. 2015,
+  Weng et al. 2016, Forsythe et al. 2021) — via **RERconverge**
+  (github.com/nclark-lab/RERconverge), a real, actively-maintained R package.
+  Pipeline: `scripts/fetch_orthologs.py` (Ensembl REST homology, a fixed
+  16-species vertebrate panel) → `scripts/build_gene_alignments.py` (MAFFT) →
+  `scripts/estimate_phangorn_trees.R` (branch-length ML fitting on a **fixed**
+  master topology, `scripts/data/vertebrate_master_tree.nwk` — RERconverge's
+  own recommended method at this scale; a free per-gene topology search, e.g.
+  FastTree, disagrees with the master tree far too often at ~16 taxa and gets
+  discarded as "discordant") → `scripts/rerconverge_runner.R`
+  (readTrees/getAllResiduals) → `scripts/compute_evolutionary_coupling.py`
+  (Pearson correlation between the two genes' relative-evolutionary-rate
+  vectors, gated at `MIN_SHARED_BRANCHES` — a correlation over too few shared
+  branches is noise, not signal, so the pair simply abstains rather than
+  getting a low-confidence number).
+  **Unlike every other field so far, this one is genuinely pairwise** (A's
+  coupling *with B specifically*, not a property of A alone) — it's loaded via
+  `build_pair_annotation_table()` (`negaverse/io/annotations.py`), a second
+  mechanism alongside the per-node `build_annotation_table()`, reading
+  `node_a<TAB>node_b<TAB>value` files and merged onto the right entity's
+  record per-pair at score time (`streams/rules.py::_RuleFilterBase`) — see
+  that module for why a naive per-node cache can't represent this correctly.
+  **Scope**: the species panel and master tree are vertebrate-specific
+  (matching this project's human PPI calibration benchmarks); bacterial or
+  viral query proteins simply have no Ensembl vertebrate gene mapping and
+  abstain gracefully, rather than producing a meaningless score.
+  `scripts/calibrate_evolutionary_coupling_threshold.py` (same
+  subsample/Youden's-J/protein-disjoint methodology as
+  `hydrophobicity_interface`) is written and runs end-to-end, but the
+  real calibration run hasn't been performed yet — `evolutionary_coupling_absence`'s
+  threshold in `rules/ppi.yaml` is still the pre-calibration placeholder.
 
 - `a.interface_conservation`  
   - Compute residue-level conservation (e.g. via Consurf, PSI-BLAST + entropy)
@@ -257,17 +297,20 @@ Localization fields should be compatible with the TSV format used by
 `localization.py` (one node per line,
 `node<TAB>compartment1,compartment2,…`).
 
-**Graph-structural fields are different.** `degree`, `neighbors`, and
-`graph_two_m` depend on whichever graph is currently loaded, but
-`build_annotation_table()` (`negaverse/io/annotations.py`) takes no graph
-argument today, and its only call sites (`scripts/validate_rules.py`,
-`negaverse/streams/rules.py::_RuleFilterBase.fit()`) call it with none —
-`fit()` has `graph` available and simply doesn't pass it through. So these
-three fields will always abstain until someone extends
-`build_annotation_table(graph=None)` to populate them from `graph` when given,
-and updates the two call sites to pass `graph` in. That's a small, real engine
-change (not just a loader) — do it before relying on any topology rule from
-Step 4 in production.
+**Graph-structural fields work differently, and already work today.**
+`degree`, `neighbors`, and `graph_two_m` depend on whichever graph is
+currently loaded, so they can't come from `build_annotation_table()`
+(`negaverse/io/annotations.py`), which correctly takes no graph argument.
+Instead, `negaverse/streams/rules.py::_RuleFilterBase.fit()` calls
+`build_annotation_table()` for the static fields and then merges these three
+graph-derived ones on top via `_augment_with_graph()`, using the live graph it
+already has at `fit()` time — so any rule referencing them genuinely fires
+today in the real pipeline (`RuleGradedFilter`/`RuleVetoFilter`), not just in
+theory. The one place they'll *always* show as missing is
+`scripts/validate_rules.py` — that script calls `build_annotation_table()`
+directly, standalone, with no graph to augment with, so its report is a
+property of that standalone checker's limited context, not of whether a
+topology rule actually works in production.
 
 ---
 
@@ -294,12 +337,18 @@ Examples:
 when: "disjoint(a.compartments, b.compartments)"
 when: "ligand.volume > protein.pocket_volume * 1.5"
 when: "ligand.logp > 5 and protein.pocket_polarity > 0.5"
-when: "disjoint(a.neighbors, b.neighbors) and (a.degree * b.degree) / a.graph_two_m < 0.01"
 when: "a.evolutionary_coupling_score_with_b < 0.1"
 when: "a.string_score_with_b < 0.15"
 when: "a.surface_hydrophobicity > 0.44 or b.surface_hydrophobicity > 0.44"
 when: "ligand.lineage_specificity == 'restricted_lineage' and disjoint(ligand.restricted_lineage_taxids, protein.lineage_taxids)"
 ```
+
+The grammar can express `disjoint(a.neighbors, b.neighbors) and (a.degree *
+b.degree) / a.graph_two_m < 0.01` (no-shared-neighbors + low expected edge
+count) too — but don't write that rule: it's exactly `TopologyFilter`'s
+`no_overlap`/`easy_negative` case, already computed more rigorously (L3 paths
+too) as an independent stream. Encoding it again in YAML would double-count
+that one topological fact against the same combined score. See Step 5.
 
 Note the current predicates are **binary** — the rule either fires or it doesn't.
 If you need graded behavior, express it through thresholds on numeric fields
@@ -334,14 +383,19 @@ Typical ranges:
 | 0.1–0.3| weak prior / noisy signal           | coarse co-expression; mild topology/evolutionary mismatch |
 
 Topology-specific guidance:
-- No shared neighbors (`disjoint(a.neighbors, b.neighbors)`) combined with a
-  low configuration-model expected-edge count (`(a.degree * b.degree) /
-  a.graph_two_m` near 0) is the `no_overlap`/`easy_negative` case
-  `TopologyFilter` already floors at `value ≈ 0.98` — a comparable YAML rule
-  can use `weight` in the 0.7–0.9 range.
-- Full L3/RA-based scoring is a more refined version of this same signal, but
-  isn't expressible as a `when` rule (see Step 3) — use `TopologyFilter`'s
-  output for that rather than approximating it here.
+- **Don't write a rule for "no shared neighbors + low configuration-model
+  expected edge count."** `TopologyFilter` already floors exactly this case
+  (`no_overlap`/`easy_negative`) at `value ≈ 0.98`, more rigorously than a YAML
+  rule could (it also checks L3 length-3 paths, not just common neighbors).
+  A YAML rule duplicating this — `rules/ppi.yaml` shipped one,
+  `no_shared_neighbors_low_expected_edge`, and it was later removed for this
+  reason — doesn't add evidence; it double-counts one topological fact,
+  because `TopologyFilter` and the rule engine's output are independent
+  streams that both feed the same combined score.
+- Full L3/RA-based scoring is a more refined version of this same signal, and
+  isn't expressible as a `when` rule anyway (see Step 3) — use
+  `TopologyFilter`'s output for any topology-derived weighting, don't
+  approximate it here.
 
 Evolutionary-specific guidance:
 - Strong absence of co-evolution signal across well-sampled orthologs → `weight`
@@ -398,11 +452,6 @@ rationale: >
 rationale: >
   A ligand substantially larger than the target's binding pocket cannot be
   accommodated, so a non-edge is a safe negative.
-
-rationale: >
-  Two proteins with no shared interactors and a configuration-model expected
-  edge count near zero are rarely adjacent in this network, so a non-edge
-  between them is a safer negative.
 
 rationale: >
   Proteins with no detectable co-evolution signal across orthologs are less

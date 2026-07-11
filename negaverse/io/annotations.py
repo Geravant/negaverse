@@ -18,6 +18,14 @@ Two kinds are wired:
 Graph-derived fields (neighbors / degree / graph_two_m) are NOT loaded here — the
 rule filters add them from the live graph at fit time (see streams/rules.py), so
 topology rules work without a data file.
+
+Pairwise fields (e.g. `evolutionary_coupling_score_with_b`, `string_score_with_b`)
+are a third kind, loaded separately via `build_pair_annotation_table()` below —
+their value depends on *both* entities in a pair, not one node alone, so they
+can't live in the `dict[node -> {field: value}]` shape above. See that
+function's docstring for the file format; `streams/rules.py::_RuleFilterBase`
+merges the right pair's values onto the `a`-side record at score() time, fresh
+per (u, v) call.
 """
 from __future__ import annotations
 
@@ -32,6 +40,11 @@ _SCALAR_FIELDS = {
     "pocket_volume": f"{ANNOT_DIR}/pocket_volume.tsv",
     "pocket_hydrophobicity": f"{ANNOT_DIR}/pocket_hydrophobicity.tsv",
     "pocket_polarity": f"{ANNOT_DIR}/pocket_polarity.tsv",
+}
+# field name -> default TSV path (node_a<TAB>node_b<TAB>float, order-independent).
+# Extend as pairwise sources are added; see build_pair_annotation_table().
+_PAIR_FIELDS = {
+    "evolutionary_coupling_score_with_b": f"{ANNOT_DIR}/evolutionary_coupling.tsv",
 }
 
 
@@ -52,6 +65,26 @@ def _load_scalar_tsv(path: str | Path) -> dict[str, float]:
     return out
 
 
+def _load_pair_tsv(path: str | Path) -> dict[frozenset[str], float]:
+    """node_a<TAB>node_b<TAB>value. Order-independent: pair properties like
+    evolutionary coupling or a STRING score are symmetric, so the key is a
+    frozenset of the two node IDs, not an ordered tuple."""
+    out: dict[frozenset[str], float] = {}
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split("\t")
+            if len(parts) < 3:
+                continue
+            try:
+                out[frozenset((parts[0], parts[1]))] = float(parts[2])
+            except ValueError:
+                continue
+    return out
+
+
 def build_annotation_table(localization_path: str | Path = LOC_PATH,
                            scalar_fields: dict[str, str] | None = None) -> dict[str, dict]:
     table: dict[str, dict] = {}
@@ -66,4 +99,17 @@ def build_annotation_table(localization_path: str | Path = LOC_PATH,
                 table.setdefault(node, {})[field] = val
         except FileNotFoundError:
             pass                  # field not sourced -> rules that read it abstain
+    return table
+
+
+def build_pair_annotation_table(
+        pair_fields: dict[str, str] | None = None) -> dict[str, dict[frozenset[str], float]]:
+    """field name -> {frozenset({node_a, node_b}): value}. Missing file -> that
+    field simply absent (same silent-abstain convention as build_annotation_table)."""
+    table: dict[str, dict[frozenset[str], float]] = {}
+    for field, path in (pair_fields or _PAIR_FIELDS).items():
+        try:
+            table[field] = _load_pair_tsv(path)
+        except FileNotFoundError:
+            pass
     return table

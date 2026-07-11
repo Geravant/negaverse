@@ -46,29 +46,27 @@
     DRYAD (doi:10.5061/dryad.15dv41p84); UPNA-PPI
     (github.com/alxndgb/UPNA-PPI).
 
-- id: no_shared_neighbors_low_expected_edge
-  modality: ppi
-  applies_to: [protein, protein]
-  when: "disjoint(a.neighbors, b.neighbors) and (a.degree * b.degree) / a.graph_two_m < 0.01"
-  effect: safer_negative
-  weight: 0.7                       # topology, no_overlap/easy_negative proxy: 0.7-0.9
-  rationale: >
-    Two proteins with no shared interactors and a configuration-model expected
-    edge count near zero are rarely adjacent in this network, so a non-edge
-    between them is a safer negative.
-  source: "TODO — threshold to confirm; mirrors negaverse/streams/topology.py::TopologyFilter"
-
 - id: evolutionary_coupling_absence
   modality: ppi
   applies_to: [protein, protein]
   when: "a.evolutionary_coupling_score_with_b < 0.1"
   effect: safer_negative
-  weight: 0.5                       # well-sampled orthologs: 0.5-0.7; conservative until MSA depth is checked
+  weight: 0.5                       # well-sampled orthologs: 0.5-0.7; conservative until calibrated
   rationale: >
     Proteins with no detectable co-evolution signal across well-sampled
     orthologs are less likely to form a conserved physical complex, making a
     non-edge a safer negative.
-  source: "TODO — EVcouplings threshold to confirm"
+  source: >
+    TODO — threshold/weight not yet calibrated. Method implemented: Evolutionary
+    Rate Covariation (Clark & Aquadro 2010) via RERconverge
+    (scripts/fetch_orthologs.py -> scripts/build_gene_alignments.py ->
+    scripts/estimate_phangorn_trees.R -> scripts/rerconverge_runner.R ->
+    scripts/compute_evolutionary_coupling.py), evaluated against EVcouplings
+    (rejected as impractical at this scale) and STRING's phylogenetic-profile
+    channels (too narrow: curation-gated, doesn't cover novel/non-STRING
+    proteins). scripts/calibrate_evolutionary_coupling_threshold.py runs
+    end-to-end (same DRYAD/UPNA-PPI benchmarks as hydrophobicity_interface) but
+    the real calibration pass hasn't been run yet.
 
 - id: string_low_confidence_non_interaction
   modality: ppi

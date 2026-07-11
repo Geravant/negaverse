@@ -8,8 +8,11 @@ the three stages behave (veto drops, graded merges, gated runs on the tail).
 from __future__ import annotations
 
 from negaverse import run_pipeline, PipelineConfig
+from negaverse.graph import TypedInteractionGraph
+from negaverse.rule_engine import Rule
 from negaverse.schema import StreamScore
 from negaverse.streams import Filter, Stage, register, build_filters, registered
+from negaverse.streams import RuleGradedFilter
 from negaverse.io import load_sars_cov2_graph
 
 
@@ -57,6 +60,58 @@ def test_new_graded_filter_flows_through_without_pipeline_edits():
     r = result.records[0]
     assert "const_test" in r.streams and r.streams["const_test"] == 0.5
     assert "const_test" in result.stats["filters"]["graded"]
+
+
+def _coupling_rule() -> Rule:
+    return Rule(id="evolutionary_coupling_absence_test", modality="ppi",
+                applies_to=("protein", "protein"),
+                when="a.evolutionary_coupling_score_with_b < 0.1",
+                effect="safer_negative", weight=0.5).compile()
+
+
+def test_pairwise_annotation_fires_for_the_right_pair():
+    """A pair-keyed field (evolutionary_coupling_score_with_b) should fire the
+    rule for a pair whose score clears the threshold, and abstain for a pair
+    that doesn't — proving build_pair_annotation_table's values actually reach
+    the rule engine as `a.<field>`."""
+    graph = TypedInteractionGraph.from_edges(
+        edges=[("P1", "P2")],
+        node_type={"P1": "protein", "P2": "protein", "P3": "protein"})
+    pair_ann = {"evolutionary_coupling_score_with_b": {
+        frozenset({"P1", "P2"}): 0.05,   # below 0.1 -> rule fires
+        frozenset({"P1", "P3"}): 0.9,    # above 0.1 -> rule doesn't fire
+    }}
+    f = RuleGradedFilter(rules=[_coupling_rule()], annotations={}, pair_annotations=pair_ann)
+    f.fit(graph)
+
+    fired = f.score(graph, "P1", "P2")
+    assert fired.value is not None and fired.value > 0.5
+
+    abstained = f.score(graph, "P1", "P3")
+    assert abstained.value is None
+
+
+def test_pairwise_annotation_does_not_leak_across_partners():
+    """Scoring (P1, P3) right after (P1, P2) must not corrupt P1's cached
+    per-node record — each call's injected pair value must be scoped to that
+    exact call, not mutate the shared annotation cache for node P1."""
+    graph = TypedInteractionGraph.from_edges(
+        edges=[("P1", "P2"), ("P1", "P3")],
+        node_type={"P1": "protein", "P2": "protein", "P3": "protein"})
+    pair_ann = {"evolutionary_coupling_score_with_b": {
+        frozenset({"P1", "P2"}): 0.05,
+        frozenset({"P1", "P3"}): 0.9,
+    }}
+    f = RuleGradedFilter(rules=[_coupling_rule()], annotations={}, pair_annotations=pair_ann)
+    f.fit(graph)
+
+    f.score(graph, "P1", "P2")            # fires; if this mutated self._ann["P1"]...
+    result = f.score(graph, "P1", "P3")   # ...this would incorrectly also fire
+    assert result.value is None
+
+    # and P1-P2 must still fire correctly afterward, unaffected by the P1-P3 call
+    still_fires = f.score(graph, "P1", "P2")
+    assert still_fires.value is not None and still_fires.value > 0.5
 
 
 def test_build_filters_by_modality():
