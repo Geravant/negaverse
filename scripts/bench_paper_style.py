@@ -103,25 +103,55 @@ def _hits_at_k(y_true, scores, k, positive=True):
     return float(np.mean(y_true[idx] == target))
 
 
+def _mrr(y_true, scores):
+    """Mean reciprocal rank of the positives (rank 1 = highest score)."""
+    order = np.argsort(-scores)                    # descending
+    ranks = np.empty(len(scores), dtype=int)
+    ranks[order] = np.arange(1, len(scores) + 1)
+    pr = ranks[y_true == 1]
+    return float(np.mean(1.0 / pr)) if len(pr) else float("nan")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2])
     ap.add_argument("--split", type=float, default=0.5, help="fraction of proteins in the TRAIN group")
-    ap.add_argument("--k", type=int, nargs="+", default=[100])
+    ap.add_argument("--k", type=int, nargs="+", default=[50, 100, 200])
     args = ap.parse_args()
 
     pos_all, neg_all, emb = _load_dryad_embedded()
     rules = [r for r in load_rules()
              if r.modality == "ppi" and r.effect in ("safer_negative", "riskier_negative")]
-    strategies = ["random", "topology", "stacked"]
-    print("=" * 88)
-    print("Paper-style (UPNA-PPI/TPPNI) inductive evaluation — DRYAD, ESM2 features")
+
+    # Full battery: paper baselines (random, curated-experimental) + negaverse
+    # (topology, stacked=all rules) + every rule added individually on top of topology.
+    # spec: "random" | "curated" | None (topology) | list[Rule] (rule subset).
+    strategies: dict = {"random": "random", "curated": "curated",
+                        "topology": None, "stacked": rules}
+    for r in rules:
+        strategies[f"+{r.id}"] = [r]
+
+    print("=" * 96)
+    print("Paper-style (UPNA-PPI/TPPNI) inductive evaluation — DRYAD, ESM2 features — FULL BATTERY")
     print(f"pos(embedded)={len(pos_all)}  neg(embedded)={len(neg_all)}  "
           f"split={args.split:.0%} train proteins  seeds={args.seeds}")
-    print(f"graded rules in 'stacked': {[r.id for r in rules]}")
-    print("=" * 88)
+    print(f"graded rules: {[r.id for r in rules]}")
 
-    metrics = {s: {"auroc": [], "auprc": [],
+    # firing coverage of each rule on the DRYAD (embedded) graph — so inert rules are visible
+    allnodes = {p for e in pos_all + neg_all for p in e}
+    _tg = TypedInteractionGraph.from_edges(
+        list(pos_all), {n_: "protein" for n_ in allnodes},
+        admissible_types=[("protein", "protein")], name="cov")
+    _rng = np.random.default_rng(0); _ns = list(allnodes)
+    _samp = [(_ns[_rng.integers(len(_ns))], _ns[_rng.integers(len(_ns))]) for _ in range(3000)]
+    print("rule firing coverage on DRYAD (fraction of sampled pairs scored):")
+    for r in rules:
+        f = RuleGradedFilter(rules=[r]); f.fit(_tg)
+        cov = sum(1 for u, v in _samp if u != v and f.score(_tg, u, v).value is not None) / len(_samp)
+        print(f"  {r.id:<42} {cov:6.1%}")
+    print("=" * 96)
+
+    metrics = {s: {"auroc": [], "auprc": [], "mrr": [],
                    **{f"ppi@top{k}": [] for k in args.k},
                    **{f"ppni@bot{k}": [] for k in args.k}} for s in strategies}
 
@@ -135,6 +165,7 @@ def main():
         train_pos = [(u, v) for u, v in pos_all if u in train_nodes and v in train_nodes]
         test_pos = [(u, v) for u, v in pos_all if u in test_nodes and v in test_nodes]
         test_neg = [(u, v) for u, v in neg_all if u in test_nodes and v in test_nodes]
+        train_curated = [(u, v) for u, v in neg_all if u in train_nodes and v in train_nodes]
         if not train_pos or not test_pos or not test_neg:
             print(f"  seed {seed}: empty split, skipping"); continue
         pos_set = {frozenset(e) for e in pos_all}
@@ -143,13 +174,13 @@ def main():
         Xte = _hadamard(emb, list(test_pos) + list(test_neg))
         yte = np.r_[np.ones(len(test_pos)), np.zeros(len(test_neg))].astype(int)
 
-        for strat in strategies:
-            if strat == "random":
+        for strat, spec in strategies.items():
+            if spec == "random":
                 neg = _random_negatives(train_nodes, pos_set, n_neg, rng)
-            elif strat == "topology":
-                neg = _topology_stacked_negatives(train_pos, n_neg, seed, None)
+            elif spec == "curated":
+                neg = train_curated[:n_neg] if train_curated else []
             else:
-                neg = _topology_stacked_negatives(train_pos, n_neg, seed, rules)
+                neg = _topology_stacked_negatives(train_pos, n_neg, seed, spec)
             if not neg:
                 continue
             Xtr = _hadamard(emb, list(train_pos) + list(neg))
@@ -159,31 +190,35 @@ def main():
             p = clf.predict_proba(Xte)[:, 1]
             metrics[strat]["auroc"].append(roc_auc_score(yte, p))
             metrics[strat]["auprc"].append(average_precision_score(yte, p))
+            metrics[strat]["mrr"].append(_mrr(yte, p))
             for k in args.k:
                 kk = min(k, len(test_pos), len(test_neg))
                 metrics[strat][f"ppi@top{k}"].append(_hits_at_k(yte, p, kk, positive=True))
                 metrics[strat][f"ppni@bot{k}"].append(_hits_at_k(yte, p, kk, positive=False))
-            print(f"  seed {seed}  {strat:<10} AUROC={metrics[strat]['auroc'][-1]:.3f}  "
-                  f"n_train_neg={len(neg)}  test_pos={len(test_pos)} test_neg={len(test_neg)}")
+            print(f"  seed {seed}  {strat:<26} AUROC={metrics[strat]['auroc'][-1]:.3f}  "
+                  f"n_neg={len(neg)}")
 
-    # Table-1-style output
-    cols = ["auroc", "auprc"] + [f"ppi@top{k}" for k in args.k] + [f"ppni@bot{k}" for k in args.k]
-    print("\n" + "=" * 88)
-    print("  Table 1 (paper style) — mean over seeds.  Ranking metrics reveal tail behavior;")
-    print("  the paper's finding: random gets decent AUROC but weaker Hits at the tails.")
-    print("-" * 88)
-    hdr = f"  {'strategy':<10}" + "".join(f"{c:>13}" for c in cols)
-    print(hdr); print("  " + "-" * (len(hdr) - 2))
+    # Table-1-style output (full battery)
+    cols = ["auroc", "auprc", "mrr"] + [f"ppi@top{k}" for k in args.k] + [f"ppni@bot{k}" for k in args.k]
     mean = lambda s, c: (float(np.mean(metrics[s][c])) if metrics[s][c] else float("nan"))
+    print("\n" + "=" * 96)
+    print("  Table 1 (paper style) — mean over seeds. Ranking metrics reveal tail behavior AUROC hides.")
+    print("  baselines: random, curated(experimental negs) | negaverse: topology, stacked, +each rule")
+    print("-" * 96)
+    hdr = f"  {'strategy':<26}" + "".join(f"{c:>11}" for c in cols)
+    print(hdr); print("  " + "-" * (len(hdr) - 2))
     for s in strategies:
-        print(f"  {s:<10}" + "".join(f"{mean(s,c):>13.3f}" for c in cols))
-    print("-" * 88)
-    # deltas vs random on the tail metric the paper emphasizes
-    for k in args.k:
-        for c in (f"ppi@top{k}", f"ppni@bot{k}"):
-            r = mean("random", c)
-            print(f"  Δ {c} vs random:  topology {mean('topology',c)-r:+.3f}   "
-                  f"stacked {mean('stacked',c)-r:+.3f}")
+        row = "".join(f"{mean(s,c):>11.3f}" if metrics[s][c] else f"{'--':>11}" for c in cols)
+        print(f"  {s:<26}{row}")
+    print("-" * 96)
+    # per-strategy deltas vs random on the metrics the paper emphasizes
+    print("  Δ vs random (positive-ranking PPIHits@Top100 · negative-ranking PPNIHits@Bottom100):")
+    r_top = mean("random", "ppi@top100"); r_bot = mean("random", "ppni@bot100")
+    for s in strategies:
+        if s == "random" or not metrics[s]["auroc"]:
+            continue
+        print(f"    {s:<26} PPIHits@Top100 {mean(s,'ppi@top100')-r_top:+.3f}   "
+              f"PPNIHits@Bottom100 {mean(s,'ppni@bot100')-r_bot:+.3f}")
 
 
 if __name__ == "__main__":
