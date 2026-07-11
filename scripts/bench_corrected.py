@@ -73,31 +73,47 @@ def _score_pool(train_pos, max_pool, seed, full_pos_set):
         list(train_pos), {n: "protein" for n in nodes},
         admissible_types=[("protein", "protein")], name="pool")
     veto = build_filters("ppi", ["known_positive_veto"])[0]
-    graded = build_filters("ppi", ["structured", "topology"]) + [RuleGradedFilter(rules=_RULES)]
-    for f in [veto] + graded:
+    structured, topology = build_filters("ppi", ["structured", "topology"])
+    # score each rule SEPARATELY so any subset's fused confidence can be recomputed
+    # without re-scoring the pool (RuleGradedFilter fuses fired rules as Σ(w·v)/Σ(w)).
+    per_rule = {r.id: RuleGradedFilter(rules=[r]) for r in _RULES}
+    for f in [veto, structured, topology] + list(per_rule.values()):
         f.fit(tg)
 
     cand = generate_candidates(tg, max_pool=max_pool, seed=seed)
     rows, risks = [], []
     for (u, v) in cand:
-        sc = veto.score(tg, u, v)
-        vetoed = bool(sc.veto)                                  # known positive (DB or graph)
-        vals, risk = [], 0.0
-        for f in graded:
-            s = f.score(tg, u, v)
-            if s.value is not None:
-                vals.append(s.value)
-            if f.name == "topology":
-                risk = float((s.evidence or {}).get("risk", 0.0))
-        conf = float(np.mean(vals)) if vals else 0.5
-        rows.append({"u": u, "v": v, "conf": conf, "risk": risk, "vetoed": vetoed,
+        vetoed = bool(veto.score(tg, u, v).veto)                # known positive (DB or graph)
+        s_val = structured.score(tg, u, v).value
+        t = topology.score(tg, u, v)
+        t_val, risk = t.value, float((t.evidence or {}).get("risk", 0.0))
+        rule_vals = {}                                          # rid -> (weight, value) for FIRED rules
+        for r in _RULES:
+            rs = per_rule[r.id].score(tg, u, v)
+            if rs.value is not None:
+                rule_vals[r.id] = (r.weight, rs.value)
+        rows.append({"u": u, "v": v, "struct": s_val, "topo": t_val, "risk": risk,
+                     "rules": rule_vals, "vetoed": vetoed,
                      "dirty": vetoed or (frozenset((u, v)) in full_pos_set)})
         risks.append(risk)
     # hardness = percentile of topology risk across the pool (matches the pipeline)
     order = np.argsort(np.argsort(risks))
     for i, r in enumerate(rows):
         r["hardness"] = order[i] / max(len(rows) - 1, 1)
+        r["conf"] = _conf(r, [x.id for x in _RULES])           # default conf = all rules
     return rows
+
+
+def _conf(row, rule_ids):
+    """Fused mean confidence for a given rule subset (matches _fuse_confidence's
+    default 'mean'): mean of {structured, topology, combined-rules-value}, skipping
+    abstentions. Combined-rules-value = Σ(w·v)/Σ(w) over the subset's FIRED rules."""
+    vals = [x for x in (row["struct"], row["topo"]) if x is not None]
+    fired = [(w, v) for rid, (w, v) in row["rules"].items() if rid in rule_ids]
+    if fired:
+        num = sum(w * v for w, v in fired); den = sum(w for w, _ in fired) or len(fired)
+        vals.append(num / den)
+    return float(np.mean(vals)) if vals else 0.5
 
 
 def _select(pool, arm, n, rng):
@@ -119,6 +135,15 @@ def _select(pool, arm, n, rng):
         hard.sort(key=lambda r: r["conf"], reverse=True)          # re-rank hard tail by biology conf
         return [(r["u"], r["v"]) for r in hard[:n]]
     raise ValueError(arm)
+
+
+def _select_stacked_subset(pool, n, rule_ids):
+    """Stacked selection where the hard-tail re-ranking uses only `rule_ids` — for
+    per-rule leave-one-out ablation."""
+    clean = [r for r in pool if not r["vetoed"]]
+    hard = sorted(clean, key=lambda r: r["hardness"], reverse=True)[:max(4 * n, n)]
+    hard.sort(key=lambda r: _conf(r, rule_ids), reverse=True)
+    return [(r["u"], r["v"]) for r in hard[:n]]
 
 
 def _hits(y, s, k, positive=True):
@@ -190,23 +215,37 @@ def main():
     ap.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2])
     ap.add_argument("--max-pool", type=int, default=200000)
     ap.add_argument("--models", nargs="+", default=["rf", "lgbm"], choices=["rf", "lgbm"])
+    ap.add_argument("--rule-ablation", action="store_true",
+                    help="leave each graded rule out of the stacked arm one-by-one")
     args = ap.parse_args()
 
     global _RULES
     _RULES = [r for r in load_rules()
               if r.modality == "ppi" and r.effect in ("safer_negative", "riskier_negative")]
 
+    # arm_list + spec: "builtin" -> _select; None -> veto random; list[str] -> stacked with that rule subset
+    if args.rule_ablation:
+        all_ids = [r.id for r in _RULES]
+        spec = {"random_veto": None, "stacked[ALL rules]": all_ids}
+        for r in _RULES:
+            spec[f"stacked[-{r.id}]"] = [x for x in all_ids if x != r.id]
+        spec["stacked[NO rules]"] = []
+    else:
+        spec = {a: "builtin" for a in ARMS}
+    arm_list = list(spec)
+
     all_pos, gold, nodes, full_pos_set = _load_dataset(args.dataset)
     print("=" * 92)
-    print(f"CORRECTED benchmark — {args.dataset.upper()}, one frozen veto-cleaned pool")
+    print(f"CORRECTED benchmark — {args.dataset.upper()}, one frozen veto-cleaned pool"
+          f"{'  [RULE ABLATION]' if args.rule_ablation else ''}")
     print(f"full edges={len(all_pos)}  nodes={len(nodes)}  max_positives={args.max_positives or 'ALL'}  "
-          f"gold={len(gold)}  seeds={args.seeds}")
+          f"gold={len(gold)}  seeds={args.seeds}  rules={[r.id for r in _RULES]}")
     print("=" * 92)
 
     # metrics[(arm, model)][metric] = [per-seed values]
     metrics = {(a, m): {k: [] for k in ["auroc", "auprc", "ppi@100", "ppni@100", "auroc_noniso"]}
-               for a in ARMS for m in args.models}
-    purity = {a: [] for a in ARMS}
+               for a in arm_list for m in args.models}
+    purity = {a: [] for a in arm_list}
     print(f"models: {args.models}")
     for seed in args.seeds:
         rng = np.random.default_rng(seed)
@@ -217,8 +256,14 @@ def main():
         rng.shuffle(gold_s)
         pool = _score_pool(pos, args.max_pool, seed, full_pos_set)   # ONE pool, all arms share it
         n_neg = int(len(pos) * 0.8)
-        for arm in ARMS:
-            neg = _select(pool, arm, n_neg, np.random.default_rng(seed))
+        for arm in arm_list:
+            sp = spec[arm]
+            if sp == "builtin":
+                neg = _select(pool, arm, n_neg, np.random.default_rng(seed))
+            elif sp is None:
+                neg = _select(pool, "random_veto", n_neg, np.random.default_rng(seed))
+            else:
+                neg = _select_stacked_subset(pool, n_neg, sp)
             if not neg:
                 continue
             dirty = sum(1 for u, v in neg if frozenset((u, v)) in full_pos_set)
@@ -229,26 +274,36 @@ def main():
                     if k in metrics[(arm, m)]:
                         metrics[(arm, m)][k].append(val)
             au = "  ".join(f"{m}={per_model[m]['auroc']:.3f}" for m in args.models)
-            print(f"  seed {seed}  {arm:<15} AUROC[{au}]  n_neg={len(neg)} hidden_pos={dirty}")
+            print(f"  seed {seed}  {arm:<28} AUROC[{au}]  n_neg={len(neg)} hidden_pos={dirty}")
 
     mean = lambda a, m, k: float(np.mean(metrics[(a, m)][k])) if metrics[(a, m)][k] else float("nan")
+    w = 34 if args.rule_ablation else 15
+    ref = "stacked[ALL rules]" if args.rule_ablation else "random_veto"
     for m in args.models:
-        print("\n" + "=" * 92)
+        print("\n" + "=" * 100)
         print(f"  CORRECTED results — model={m.upper()}, mean over seeds. 'noniso' = both-endpoints-non-isolated.")
-        print("-" * 92)
-        hdr = f"  {'arm':<15}{'AUROC':>9}{'AUPRC':>9}{'AUROC_noniso':>14}{'PPIHit@100':>12}{'PPNIHit@100':>13}{'hidden+':>9}"
+        print("-" * 100)
+        hdr = f"  {'arm':<{w}}{'AUROC':>9}{'AUPRC':>9}{'AUROC_noniso':>14}{'PPIHit@100':>12}{'PPNIHit@100':>13}{'hidden+':>9}"
         print(hdr); print("  " + "-" * (len(hdr) - 2))
-        for a in ARMS:
+        for a in arm_list:
             hp = float(np.mean(purity[a])) if purity[a] else float("nan")
-            print(f"  {a:<15}{mean(a,m,'auroc'):>9.3f}{mean(a,m,'auprc'):>9.3f}"
+            print(f"  {a:<{w}}{mean(a,m,'auroc'):>9.3f}{mean(a,m,'auprc'):>9.3f}"
                   f"{mean(a,m,'auroc_noniso'):>14.3f}{mean(a,m,'ppi@100'):>12.3f}"
                   f"{mean(a,m,'ppni@100'):>13.3f}{hp:>9.1f}")
-        print("-" * 92)
-        r, rn = mean("random_veto", m, "auroc"), mean("random_veto", m, "auroc_noniso")
-        print("  Δ AUROC vs veto-random:  " + "   ".join(
-            f"{a} {mean(a,m,'auroc')-r:+.3f}" for a in ("topology_hard", "topology_safe", "stacked")))
-        print("  Δ AUROC_noniso vs veto-random:  " + "   ".join(
-            f"{a} {mean(a,m,'auroc_noniso')-rn:+.3f}" for a in ("topology_hard", "topology_safe", "stacked")))
+        print("-" * 100)
+        if args.rule_ablation:
+            ra, rn = mean(ref, m, "auroc"), mean(ref, m, "auroc_noniso")
+            print(f"  Δ vs {ref} (a rule that HELPS the stack shows a NEGATIVE Δ when removed):")
+            for a in arm_list:
+                if a.startswith("stacked[-"):
+                    print(f"    {a:<34} Δ AUROC {mean(a,m,'auroc')-ra:+.4f}   "
+                          f"Δ noniso {mean(a,m,'auroc_noniso')-rn:+.4f}")
+        else:
+            r, rn = mean("random_veto", m, "auroc"), mean("random_veto", m, "auroc_noniso")
+            print("  Δ AUROC vs veto-random:  " + "   ".join(
+                f"{a} {mean(a,m,'auroc')-r:+.3f}" for a in ("topology_hard", "topology_safe", "stacked")))
+            print("  Δ AUROC_noniso vs veto-random:  " + "   ".join(
+                f"{a} {mean(a,m,'auroc_noniso')-rn:+.3f}" for a in ("topology_hard", "topology_safe", "stacked")))
     print("\n  hidden+ = mean # true positives leaked into the negative set (purity; lower=cleaner)")
 
 
