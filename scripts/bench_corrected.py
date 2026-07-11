@@ -280,7 +280,7 @@ def _load_dataset(name):
     raise ValueError(name)
 
 
-def _injection_backtest(all_pos, nodes, full_pos_set, args):
+def _injection_backtest(all_pos, gold, nodes, full_pos_set, args):
     """Hidden-positive injection backtest (Tier 3). Inject K real interactions that
     are absent from the training graph (veto-bypassed = truly hidden), then measure
     what fraction each selection arm wrongly picks as a training negative. The claim
@@ -289,9 +289,11 @@ def _injection_backtest(all_pos, nodes, full_pos_set, args):
     positives are positive-like ⇒ hard); safe/stacked/counterfactual pick fewer."""
     arms = ["random_veto", "topology_hard", "topology_safe", "stacked", "counterfactual"]
     rates = {a: [] for a in arms}
-    node_set = set(nodes)
-    print(f"INJECTION BACKTEST — inject K={args.inject_k} hidden positives (veto-bypassed), "
-          f"measure fraction each arm selects as a negative (lower = better)\n" + "=" * 92)
+    dmg = {(a, m): [] for a in arms for m in args.models}       # downstream AUROC on the injected pool
+    print(f"INJECTION BACKTEST — inject K={args.inject_k} hidden positives (veto-bypassed).\n"
+          f"  selection rate = fraction each arm picks as a negative (model-INDEPENDENT — selection\n"
+          f"  happens before any model); AUROC = downstream damage under each learner (models={args.models}).\n"
+          + "=" * 92)
     for seed in args.seeds:
         rng = np.random.default_rng(seed)
         pos = all_pos
@@ -299,7 +301,7 @@ def _injection_backtest(all_pos, nodes, full_pos_set, args):
             pos = [pos[i] for i in rng.choice(len(pos), size=args.max_positives, replace=False)]
         pos = [pos[i] for i in rng.permutation(len(pos))]
         n_test = int(len(pos) * 0.2)
-        tr_pos = pos[n_test:]
+        test_pos, tr_pos = pos[:n_test], pos[n_test:]
         tr_set = {frozenset(e) for e in tr_pos}
         tr_nodes = {n for e in tr_pos for n in e}               # only nodes the train graph knows
         # hidden positives: real edges NOT in the training graph, both endpoints in the train graph
@@ -308,8 +310,9 @@ def _injection_backtest(all_pos, nodes, full_pos_set, args):
         rng.shuffle(held)
         inject = held[:args.inject_k]
         inj_keys = {frozenset(p) for p in inject}
+        gold_s = [p for p in gold if frozenset(p) not in full_pos_set]
         pool = _score_pool(tr_pos, args.max_pool, seed, full_pos_set,
-                           exclude={frozenset(p) for p in pos[:n_test]}, inject=inject)
+                           exclude={frozenset(p) for p in test_pos}, inject=inject)
         n_inj_pool = sum(1 for r in pool if r.get("injected"))
         _dg = dict(nx.Graph(tr_pos).degree())
         pos_degsums = [_dg.get(u, 0) + _dg.get(v, 0) for (u, v) in tr_pos]
@@ -321,13 +324,21 @@ def _injection_backtest(all_pos, nodes, full_pos_set, args):
                 neg = _select(pool, a, n_neg, np.random.default_rng(seed))
             sel_inj = sum(1 for uv in neg if frozenset(uv) in inj_keys)
             rates[a].append(sel_inj / max(n_inj_pool, 1))
-            print(f"  seed {seed}  {a:<16} selected {sel_inj}/{n_inj_pool} injected hidden positives")
+            res = _evaluate(tr_pos, test_pos, neg, nodes, gold_s, seed, args.models)  # damage per model
+            for m in args.models:
+                dmg[(a, m)].append(res[m]["auroc"])
+            au = "  ".join(f"{m}={res[m]['auroc']:.3f}" for m in args.models)
+            print(f"  seed {seed}  {a:<16} selected {sel_inj}/{n_inj_pool} injected  AUROC[{au}]")
     print("-" * 92)
-    print(f"  {'arm':<16}{'hidden-positive selection rate (mean, lower=better)':>52}")
+    mm = lambda a, m: float(np.mean(dmg[(a, m)])) if dmg[(a, m)] else float("nan")
+    hdr = f"  {'arm':<16}{'hidden-pos selected%':>22}" + "".join(f"{'AUROC('+m+')':>14}" for m in args.models)
+    print(hdr); print("  " + "-" * (len(hdr) - 2))
     for a in arms:
-        print(f"  {a:<16}{100*float(np.mean(rates[a])):>50.1f}%")
-    print("\n  A truly hidden positive (veto can't see it) is caught only by topology/rules ranking —")
-    print("  so a low rate here is the graded filters doing their job; a high rate is contamination.")
+        print(f"  {a:<16}{100*float(np.mean(rates[a])):>21.1f}%"
+              + "".join(f"{mm(a, m):>14.3f}" for m in args.models))
+    print("-" * 92)
+    print("  selection% is identical across models (selection precedes the learner). The AUROC")
+    print("  columns show the damage the contamination does downstream — model-robust if both agree.")
 
 
 def main():
@@ -385,7 +396,7 @@ def main():
     print("=" * 92)
 
     if args.injection_test:
-        _injection_backtest(all_pos, nodes, full_pos_set, args)
+        _injection_backtest(all_pos, gold, nodes, full_pos_set, args)
         return
 
     # metrics[(arm, model)][metric] = [per-seed values]
