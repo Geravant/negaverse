@@ -201,3 +201,87 @@ PYTHONPATH=. python3 scripts/bench_corrected.py --dataset dryad --max-positives 
 ```
 
 Needs `lightgbm` (+ `libomp` on macOS); drop `lgbm` from `--models` to run RandomForest only.
+
+---
+
+## 5. Agent-review roadmap — what we built, measured, and deferred
+
+An architectural review recommended turning negaverse from "rank by one score" into a
+constrained design system with the principle: **safety authorises the negative label,
+hardness determines usefulness, coverage determines batch membership — keep them separate.**
+We implemented it in three tiers, each with a full re-evaluation (HuRI 20k + DRYAD × RF+LGBM,
+3 seeds). The headline: the principle is right and now *measured*, but the concrete
+new selectors (mixture, counterfactual) do **not** beat `stacked` — because without
+verification they let contamination back in, which the injection backtest proves.
+
+### Tier 1 — rigor fixes (verdict unchanged, cleaner)
+* **Split-before-scoring** — the selector now fits on train edges only; held-out test
+  positives are excluded from the candidate pool (they were previously eligible to be
+  sampled *as training negatives* — a second leak). After the fix the verdict holds and
+  sharpens: `stacked` still wins (HuRI +0.003, DRYAD +0.025) and `topology_hard` is *more*
+  clearly catastrophic (HuRI Δ **−0.468** — the leakage had propped it up).
+* **Naming honesty** — the fused mean is documented as an UNCALIBRATED heuristic score, not a
+  probability (`fusion.py`).
+* **Fail-closed certification** — `KnownPositiveVeto.certification()`; the bench prints
+  **CERTIFIED / \*\*\* UNCERTIFIED \*\*\*** with loaded/missing DBs. All runs here are CERTIFIED
+  (BioGRID 273k + IntAct 176k).
+
+### Tier 2 — mixture selector (honest negative result)
+`train_selection="mixture"` (representative / safe / verified-hard, sweepable) is now a
+shippable mode, but **it does not beat `stacked`**:
+
+| arm | HuRI·RF ΔAUROC | DRYAD·RF ΔAUROC | note |
+|---|---:|---:|---|
+| `stacked` (default) | +0.005 | +0.031 | best |
+| `topology_safe` | +0.001 | +0.036 | ties/wins |
+| `mix[60/30/10]` | +0.004 | **−0.019** | hard fraction hurts |
+| `mix[50/30/20]` | +0.005 | +0.013 | still < stacked |
+
+The unverified hard fraction is **contaminated dead weight** (see the injection rate below),
+so blending it in drags the mixture toward random. The mixture would only pay off with a
+*verified* hard fraction (LLM-gated), which needs gene-symbol context the HuRI bench lacks.
+`stacked` stays the default.
+
+### Tier 3 — matched counterfactuals + injection backtest
+
+**Hidden-positive injection backtest (`--injection-test`).** Inject K real interactions that
+are absent from the training graph (veto-bypassed = truly hidden), measure the fraction each
+arm wrongly selects as a negative. This tests the exact failure mode negaverse claims to solve.
+
+| arm | HuRI hidden-pos selected | DRYAD |
+|---|---:|---:|
+| `random_veto` | 8.3 % | 0.7 % |
+| **`topology_hard`** | **74.2 %** | **64.4 %** |
+| `topology_safe` | 0.1 % | 0.0 % |
+| **`stacked`** | 0.3 % | 0.0 % |
+| `counterfactual` | 47.6 % | 5.5 % |
+
+→ **The old default (`topology_hard`) actively selects ~3 of every 4 hidden positives** — direct,
+scale-verified proof that the L3-hard tail is where hidden positives concentrate. **The shipped
+default (`stacked`) and `topology_safe` catch ~100 %** of them. This is the single cleanest
+validation in the project: the failure mode is real, and the fix works.
+
+**Matched counterfactuals (`counterfactual` arm) — negative result.** Degree-matched veto-clean
+negatives (endpoint-degree sum matched to the positives) **lose** to random (AUROC Δ −0.059 HuRI,
+−0.036 DRYAD) and select **47.6 %** hidden positives. Matching *without an independent safety
+blocking reason* re-introduces exactly the positive-like/hub contamination it was meant to avoid
+— confirming the review's own caveat that counterfactuals need a blocking reason, not just
+matching. Safety must gate the label; matching alone does not.
+
+### Deferred (documented, not built) — with rationale
+* **nnPU / non-edges-as-unlabeled** — the theoretically correct framing (it *is* the
+  hidden-positive problem), but a downstream-*model* change, not a negative-generator change; a
+  clean future baseline.
+* **Cross-fitted calibration + lower-confidence-bound + full vector candidate state**
+  (`p_negative_lcb`, hardness vector, epistemic uncertainty, selection propensity, label_status)
+  — the right production architecture; weeks-scale, over-scoped for this tool. The naming fix
+  (Tier 1) is the honest stopgap.
+* **Temporal backtest** (freeze DBs at *t*, check *t+Δ*) — the gold-standard purity test, but
+  **data-gated** (needs dated BioGRID/IntAct snapshots). The injection backtest above is the
+  feasible stand-in and already exercises the same failure mode.
+
+### Reproduce (tiers)
+```bash
+PYTHONPATH=. python3 scripts/bench_corrected.py --dataset huri --max-positives 20000 --seeds 0 1 2 --models rf lgbm --mixture
+PYTHONPATH=. python3 scripts/bench_corrected.py --dataset huri --max-positives 20000 --seeds 0 1 2 --injection-test --inject-k 1000
+```
