@@ -18,7 +18,7 @@
 - id: hydrophobicity_interface
   modality: ppi
   applies_to: [protein, protein]
-  when: "a.surface_hydrophobicity > 0.44 and b.surface_hydrophobicity > 0.44"
+  when: "a.surface_hydrophobicity > 0.44 or b.surface_hydrophobicity > 0.44"
   effect: safer_negative
   weight: 0.5                       # empirically calibrated; see rationale
   flag: hydrophobicity_interface_calibrated
@@ -26,17 +26,20 @@
     Calibrated on DRYAD and UPNA-PPI (n=300/class;
     scripts/calibrate_hydrophobicity_threshold.py) using structure-aware
     surface_hydrophobicity (DSSP exposure + AlphaFold pLDDT masking over
-    Kyte-Doolittle). Real PPIs show LOWER exposed hydrophobicity than 
-    non-interactions (AUROC 0.18–0.37 for the "low→interaction" direction), 
-    so the rule instead triggers on HIGH mutual hydrophobicity. This aligns 
-    with prior work showing interface hot spots are enriched in 
+    Kyte-Doolittle). Real PPIs show LOWER exposed hydrophobicity than
+    non-interactions (AUROC 0.18–0.37 for the "low→interaction" direction),
+    so the rule instead triggers on HIGH mutual hydrophobicity. This aligns
+    with prior work showing interface hot spots are enriched in
     aromatic/cation–π residues and have distinct core composition
-    (Bogan & Thorn 1998; Chakrabarti & Janin 2002). Thus, pairs where both
-    proteins already expose hydrophobic surface are more likely to be engaged
-    in true interactions, making low mutual hydrophobicity a riskier negative.
-    The 0.44 cutoff is the Youden’s J optimum across datasets and splits
-    (0.425–0.448), yielding negative precision 0.54–0.80 and recall 0.47–0.76.
-    Wimley–White and SAP were tested but did not improve performance.
+    (Bogan & Thorn 1998; Chakrabarti & Janin 2002). The calibration scores each
+    pair by max(h_a, h_b), so the deployed condition uses `or`, not `and`:
+    pairs where either protein already expose hydrophobic surface are more
+    likely to be engaged in true interactions, making low mutual
+    hydrophobicity a riskier negative. The 0.44 cutoff is the Youden’s J
+    optimum across datasets and splits (0.425–0.448), yielding negative
+    precision 0.54–0.80 and recall 0.47–0.76 for this max(h_a, h_b) > 0.44
+    condition. Wimley–White and SAP were tested but did not improve
+    performance.
   source: >
     Bogan & Thorn (1998) J Mol Biol 280:1–9.
     Chakrabarti & Janin (2002) Proteins 47:334–343.

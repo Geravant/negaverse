@@ -129,7 +129,7 @@ when: "ligand.logp > 5 and protein.pocket_polarity > 0.5"
 when: "disjoint(a.neighbors, b.neighbors) and (a.degree * b.degree) / a.graph_two_m < 0.01"
 when: "a.evolutionary_coupling_score_with_b < 0.1"
 when: "a.string_score_with_b < 0.15"
-when: "a.surface_hydrophobicity > 0.44 and b.surface_hydrophobicity > 0.44"
+when: "a.surface_hydrophobicity > 0.44 or b.surface_hydrophobicity > 0.44"
 when: "ligand.lineage_specificity == 'restricted_lineage' and disjoint(ligand.restricted_lineage_taxids, protein.lineage_taxids)"
 ```
 

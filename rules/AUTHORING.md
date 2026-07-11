@@ -41,7 +41,7 @@ Examples:
   own minimum reporting threshold (`combined_score < 0.15`) → **safer** negative
   (PPI) — the database finds no supporting evidence in any of its channels
   (experiments, curated DBs, co-expression, text-mining, genomic context).
-- If both proteins in a pair have unusually HIGH exposed surface hydrophobicity
+- If either protein in a pair has unusually HIGH exposed surface hydrophobicity
   → **safer** negative (PPI) — counterintuitive at first, but empirically
   calibrated against two gold-standard PPI benchmarks (DRYAD, UPNA-PPI): real
   interactions have LOWER exposed hydrophobicity than real non-interactions,
@@ -297,7 +297,7 @@ when: "ligand.logp > 5 and protein.pocket_polarity > 0.5"
 when: "disjoint(a.neighbors, b.neighbors) and (a.degree * b.degree) / a.graph_two_m < 0.01"
 when: "a.evolutionary_coupling_score_with_b < 0.1"
 when: "a.string_score_with_b < 0.15"
-when: "a.surface_hydrophobicity > 0.44 and b.surface_hydrophobicity > 0.44"
+when: "a.surface_hydrophobicity > 0.44 or b.surface_hydrophobicity > 0.44"
 when: "ligand.lineage_specificity == 'restricted_lineage' and disjoint(ligand.restricted_lineage_taxids, protein.lineage_taxids)"
 ```
 
@@ -419,8 +419,8 @@ rationale: >
   Calibration against gold-standard PPI benchmarks showed real interactions
   have lower exposed hydrophobicity than real non-interactions — interface
   hot spots are enriched in aromatic/cation-pi residues, not classic
-  hydrophobic ones. A pair where both proteins show unusually high mutual
-  exposed hydrophobicity is therefore a safer negative, not a riskier one.
+  hydrophobic ones. A pair where either protein shows unusually high exposed
+  hydrophobicity is therefore a safer negative, not a riskier one.
 ```
 
 ---
