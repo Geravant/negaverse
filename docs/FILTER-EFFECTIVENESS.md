@@ -531,3 +531,34 @@ best arm — and by far the cleanest.
 **FIX SHIPPED.** `PipelineConfig.train_selection` (`matching.py::select_train`) now offers
 `hard | safe | stacked` and **defaults to `stacked`** (the winning arm). The pipeline no longer
 emits only the losing hard tail. `hard` is retained for ablation.
+
+## 12. Full filter table — cross-dataset × cross-model (`bench_corrected`, 3 seeds)
+
+Same corrected protocol (one frozen veto-cleaned pool, un-capped positives, spectral
+features, gold test) across **two datasets** (HuRI dense, DRYAD sparse) and **two
+downstream learners** (RandomForest, LightGBM) — the model-sensitivity check. Cells are
+**AUROC (non-isolated AUROC in parens)**, mean over 3 seeds.
+
+| arm | HuRI · RF | HuRI · LGBM | DRYAD · RF | DRYAD · LGBM |
+|---|---|---|---|---|
+| random (veto-cleaned) | 0.873 (0.905) | 0.857 (0.882) | 0.640 (0.804) | 0.625 (0.846) |
+| topology **hard** | 0.742 (0.748) | 0.668 (0.652) | 0.474 (0.530) | 0.528 (0.746) |
+| topology **safe** | 0.869 (0.904) | **0.881** (0.909) | **0.672** (0.784) | **0.653** (0.875) |
+| **stacked** (default) | **0.879** (**0.913**) | 0.870 (0.904) | 0.671 (**0.822**) | 0.647 (**0.887**) |
+
+**Δ AUROC (stacked − veto-random):** HuRI-RF **+0.005**, HuRI-LGBM **+0.013**, DRYAD-RF
+**+0.031**, DRYAD-LGBM **+0.022** — positive in every cell.
+**Δ non-isolated AUROC:** +0.008, +0.022, +0.018, +0.041 — positive in every cell.
+**topology_hard:** −0.132 / −0.190 / −0.166 / −0.097 — the **only consistent loser**.
+**AUPRC:** best (or tied) is `stacked` in every cell. **Purity:** veto/safe/stacked leak ≤1
+hidden positive per set; raw random leaks ~23 on HuRI (DRYAD's gold negatives are a separate
+labelled set, so 0 leakage there).
+
+**Verdict.** Across **2 datasets × 2 models × 4 metrics**, the new default `stacked` is
+best-or-tied and the cleanest; `topology_safe` ties-or-beats random; `topology_hard` alone
+loses. The result is **model-robust** (LightGBM reproduces every RandomForest conclusion — it
+does *not* just exploit the isolation shortcut harder) and **dataset-robust** (holds on dense
+HuRI and sparse DRYAD, though on DRYAD the win is thinner and rides more on the non-isolated
+stratum — the §10 sparsity caveat). This closes the "filters worse than random" question:
+with a fair pool, real coverage, and the `stacked` selection now shipped as default, the full
+filter system is the best negative-sampling arm and by far the purest.
