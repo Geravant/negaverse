@@ -44,6 +44,8 @@ class PipelineConfig:
     #      hidden-positive enriched and, on sparse graphs, degenerates into a hub
     #      filter (§10). Kept for ablation, not recommended.
     train_selection: str = "stacked"
+    # for train_selection="mixture": (representative, safe, hard) fractions of n_train
+    mixture_proportions: tuple = (0.6, 0.3, 0.1)
     weights: dict[str, float] | None = None
     # node type whose confounder distribution the eval set is matched to (the
     # leakage-prone confounder). None = match on both endpoints' summed statistic.
@@ -193,7 +195,8 @@ def run_pipeline(
     mw = np.array([_match_weight(s) for s in kept], dtype=float)
     eval_set = degree_matched_eval(kept, mw, cfg.n_eval, seed=cfg.seed)
     eval_keys = {(s.u, s.v) for s in eval_set}
-    train_set = select_train(kept, cfg.n_train, exclude=eval_keys, mode=cfg.train_selection)
+    train_set = select_train(kept, cfg.n_train, exclude=eval_keys, mode=cfg.train_selection,
+                             proportions=cfg.mixture_proportions, seed=cfg.seed)
 
     # signal disagreement: two independent streams conflicting is worth the
     # expensive review even when the fused confidence looks unremarkable — an

@@ -57,15 +57,20 @@ def hard_train(scored: list[Scored], n: int, exclude: set[tuple[str, str]]) -> l
 
 
 def select_train(scored: list[Scored], n: int, exclude: set[tuple[str, str]],
-                 mode: str = "stacked") -> list[Scored]:
+                 mode: str = "stacked", proportions: tuple = (0.6, 0.3, 0.1),
+                 seed: int = 0) -> list[Scored]:
     """Pick the n emitted training negatives from the scored pool. See
-    PipelineConfig.train_selection for the modes and the evidence (FILTER-EFFECTIVENESS §11):
+    PipelineConfig.train_selection for the modes and the evidence (FILTER-EFFECTIVENESS):
 
       * "stacked" (default) — hard tail (top 4n by hardness) RE-RANKED by fused
-        confidence; keeps the pairs every signal agrees are true negatives. Best arm.
+        confidence; keeps the pairs every signal agrees are true negatives.
       * "safe" — the n highest-confidence negatives across the whole pool.
-      * "hard" — the n hardest by topology alone (the historical default; loses to random).
+      * "hard" — the n hardest by topology alone (historical default; loses to random).
+      * "mixture" — a curriculum blend (`proportions` = representative/safe/hard) that
+        keeps training sampling close to the evaluation population (Park & Marcotte)
+        while retaining some hard negatives. Representative = pseudo-random by pair hash.
     """
+    import hashlib
     pool = [s for s in scored if (s.u, s.v) not in exclude]
     if mode == "hard":
         pool.sort(key=lambda s: s.hardness, reverse=True)
@@ -77,4 +82,26 @@ def select_train(scored: list[Scored], n: int, exclude: set[tuple[str, str]],
         hard = sorted(pool, key=lambda s: s.hardness, reverse=True)[:max(4 * n, n)]
         hard.sort(key=lambda s: s.confidence, reverse=True)
         return hard[:min(n, len(hard))]
-    raise ValueError(f"unknown train_selection mode: {mode!r} (want hard|safe|stacked)")
+    if mode == "mixture":
+        rep_f, safe_f, hard_f = proportions
+        n_hard = int(round(n * hard_f)); n_safe = int(round(n * safe_f))
+        n_rep = max(0, n - n_hard - n_safe)
+        chosen: dict = {}
+        key = lambda s: (s.u, s.v)
+        hard = sorted(pool, key=lambda s: s.hardness, reverse=True)[:max(4 * n_hard, n_hard)]
+        hard.sort(key=lambda s: s.confidence, reverse=True)
+        for s in hard[:n_hard]:
+            chosen[key(s)] = s
+        for s in sorted(pool, key=lambda s: s.confidence, reverse=True):
+            if len(chosen) >= n_hard + n_safe:
+                break
+            chosen.setdefault(key(s), s)
+        # representative: deterministic pseudo-random order by salted pair hash
+        rest = [s for s in pool if key(s) not in chosen]
+        rest.sort(key=lambda s: hashlib.sha1(f"{seed}:{s.u}:{s.v}".encode()).hexdigest())
+        for s in rest:
+            if len(chosen) >= n:
+                break
+            chosen[key(s)] = s
+        return list(chosen.values())[:n]
+    raise ValueError(f"unknown train_selection mode: {mode!r} (want hard|safe|stacked|mixture)")

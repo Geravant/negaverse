@@ -149,6 +149,42 @@ def _select_stacked_subset(pool, n, rule_ids):
     return [(r["u"], r["v"]) for r in hard[:n]]
 
 
+def _select_mixture(pool, n, props, rng):
+    """Curriculum mixture (Park & Marcotte: training-sampling ≠ evaluation-sampling).
+    props = (representative, safe, verified_hard) fractions summing to 1:
+      * representative — veto-clean random (matches the eval population);
+      * safe — highest fused-score negatives (cleanest);
+      * verified_hard — the biology-re-ranked hard tail (our judge-free proxy for
+        'verified hard'; the LLM-gated version is Tier-2 verification below).
+    Buckets are de-duplicated; any shortfall is back-filled from representative."""
+    clean = [r for r in pool if not r["vetoed"]]
+    rep_f, safe_f, hard_f = props
+    n_hard = int(round(n * hard_f)); n_safe = int(round(n * safe_f))
+    n_rep = max(0, n - n_hard - n_safe)
+    chosen: dict = {}
+    key = lambda r: frozenset((r["u"], r["v"]))
+    # verified-hard bucket: hard tail re-ranked by fused biology score (stacked-style)
+    hard = sorted(clean, key=lambda r: r["hardness"], reverse=True)[:max(4 * n_hard, n_hard)]
+    hard.sort(key=lambda r: r["conf"], reverse=True)
+    for r in hard[:n_hard]:
+        chosen[key(r)] = (r["u"], r["v"])
+    # safe bucket: highest fused score not already taken
+    for r in sorted(clean, key=lambda r: r["conf"], reverse=True):
+        if len(chosen) >= n_hard + n_safe:
+            break
+        chosen.setdefault(key(r), (r["u"], r["v"]))
+    # representative bucket: uniform random from what's left, then back-fill
+    remaining = [r for r in clean if key(r) not in chosen]
+    if remaining:
+        idx = rng.choice(len(remaining), size=min(n_rep + (n - len(chosen)), len(remaining)),
+                         replace=False)
+        for i in idx:
+            if len(chosen) >= n:
+                break
+            chosen[key(remaining[i])] = (remaining[i]["u"], remaining[i]["v"])
+    return list(chosen.values())[:n]
+
+
 def _hits(y, s, k, positive=True):
     order = np.argsort(s)
     idx = order[-k:] if positive else order[:k]
@@ -216,6 +252,8 @@ def main():
     ap.add_argument("--models", nargs="+", default=["rf", "lgbm"], choices=["rf", "lgbm"])
     ap.add_argument("--rule-ablation", action="store_true",
                     help="leave each graded rule out of the stacked arm one-by-one")
+    ap.add_argument("--mixture", action="store_true",
+                    help="sweep representative/safe/verified-hard mixture proportions")
     args = ap.parse_args()
 
     global _RULES
@@ -229,6 +267,11 @@ def main():
         for r in _RULES:
             spec[f"stacked[-{r.id}]"] = [x for x in all_ids if x != r.id]
         spec["stacked[NO rules]"] = []
+    elif args.mixture:
+        spec = {"random_veto": "builtin", "topology_safe": "builtin", "stacked": "builtin"}
+        for rep, safe, hard in [(0.60, 0.30, 0.10), (0.70, 0.20, 0.10), (0.50, 0.30, 0.20),
+                                (0.80, 0.20, 0.00)]:
+            spec[f"mix[{int(rep*100)}/{int(safe*100)}/{int(hard*100)}]"] = ("mix", (rep, safe, hard))
     else:
         spec = {a: "builtin" for a in ARMS}
     arm_list = list(spec)
@@ -276,6 +319,8 @@ def main():
                 neg = _select(pool, arm, n_neg, np.random.default_rng(seed))
             elif sp is None:
                 neg = _select(pool, "random_veto", n_neg, np.random.default_rng(seed))
+            elif isinstance(sp, tuple) and sp[0] == "mix":
+                neg = _select_mixture(pool, n_neg, sp[1], np.random.default_rng(seed))
             else:
                 neg = _select_stacked_subset(pool, n_neg, sp)
             if not neg:
@@ -314,10 +359,11 @@ def main():
                           f"Δ noniso {mean(a,m,'auroc_noniso')-rn:+.4f}")
         else:
             r, rn = mean("random_veto", m, "auroc"), mean("random_veto", m, "auroc_noniso")
+            others = [a for a in arm_list if a != "random_veto"]
             print("  Δ AUROC vs veto-random:  " + "   ".join(
-                f"{a} {mean(a,m,'auroc')-r:+.3f}" for a in ("topology_hard", "topology_safe", "stacked")))
+                f"{a} {mean(a,m,'auroc')-r:+.3f}" for a in others))
             print("  Δ AUROC_noniso vs veto-random:  " + "   ".join(
-                f"{a} {mean(a,m,'auroc_noniso')-rn:+.3f}" for a in ("topology_hard", "topology_safe", "stacked")))
+                f"{a} {mean(a,m,'auroc_noniso')-rn:+.3f}" for a in others))
     print("\n  hidden+ = mean # true positives leaked into the negative set (purity; lower=cleaner)")
 
 
