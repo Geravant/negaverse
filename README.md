@@ -142,3 +142,62 @@ tests/         checks that everything still works
 ```
 
 More depth: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · [`docs/BENCHMARK-FINDINGS.md`](docs/BENCHMARK-FINDINGS.md) · [`docs/ADDING-A-FILTER.md`](docs/ADDING-A-FILTER.md) · [`rules/AUTHORING.md`](rules/AUTHORING.md)
+
+## Cheat-sheet: filters, modes, and how to run
+
+### Three things you can run
+
+| Command | What it does |
+|---|---|
+| `python -m negaverse.cli` | **Generate** a negative dataset for the built-in SARS-CoV-2 graph (writes results + an HTML report). |
+| `python -m negaverse.viz --dataset huri` | **Visualise** a run as an interactive report (`out/report.html`). Datasets: `sars`, `huri`, `dryad`. |
+| `python scripts/bench_corrected.py` | **Benchmark** how good the chosen negatives are vs. random (the study in `docs/FILTER-EFFECTIVENESS.md`). |
+
+### The filters (what screens each candidate pair)
+
+Every candidate pair passes through these in order. The first two can *reject* a pair; the rest give it a score.
+
+| Filter | Plain-words job |
+|---|---|
+| `known_positive_veto` | Throws out any pair already recorded as interacting (in the graph or in BioGRID/IntAct). **Always on.** |
+| `rule_veto` | Throws out pairs a hard biology rule forbids. |
+| `structured` | Down-weights "sticky" hub proteins that interact with everything. |
+| `topology` | Judges how *edge-like* a pair looks from the network shape (near an interaction = risky negative). |
+| `rules` | Biology rules (co-localisation, hydrophobicity, …) that mark a pair as a safer negative. |
+| `manifold`, `sequence_manifold` | Optional extra viewpoints (network surprise; protein-sequence similarity). |
+| `literature` | Optional LLM check on the uncertain pairs; drops likely hidden interactions. Needs an API key. |
+
+### Selection modes (how the final training negatives are picked)
+
+Set with `--train-selection` (viz) or `PipelineConfig(train_selection=...)`. Evidence: `docs/FILTER-EFFECTIVENESS.md`.
+
+| Mode | Picks… | Verdict |
+|---|---|---|
+| `stacked` | hardest pairs, then re-ranked by biology confidence | **default — best & cleanest** |
+| `safe` | the pairs we're most confident are non-interactions | ties the default |
+| `hard` | only the most edge-like pairs | not recommended — grabs hidden interactions |
+| `mixture` | a blend of representative + safe + hard | no better than `stacked` |
+| `psm` | pairs matched to the positives' profile, from the clean pool | offered for study; below `stacked` |
+
+### Benchmark flags (`scripts/bench_corrected.py`)
+
+| Flag | Meaning |
+|---|---|
+| `--dataset huri\|dryad` | which graph |
+| `--max-positives N` | cap positives (`0` = use all) |
+| `--seeds 0 1 2` | repeat runs for averages |
+| `--models rf lgbm` | downstream learner(s) to test with |
+| `--rule-ablation` | drop each biology rule one at a time to see its worth |
+| `--mixture` / `--psm` / `--eval-match` | compare those selection strategies |
+| `--injection-test` `--inject-k K` | plant K known interactions and check which strategy wrongly keeps them |
+
+### Generation flags (`python -m negaverse.cli`)
+
+| Flag | Meaning |
+|---|---|
+| `--n-train` / `--n-eval` | how many training / evaluation negatives to emit |
+| `--no-literature` | skip the LLM check (offline, no API key) |
+| `--provider` / `--model` / `--votes` | LLM provider, model, and best-of-N voting |
+| `--literature-k` | how many uncertain pairs the LLM reviews |
+| `--no-report` | skip the HTML report |
+| `--seed` | reproducibility |
