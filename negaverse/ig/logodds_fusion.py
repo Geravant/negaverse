@@ -149,3 +149,31 @@ class LogOddsStack:
         var = np.einsum("ij,jk,ik->i", D, self._fit.cov, D)
         z = norm.ppf(1.0 - a)
         return 1.0 / (1.0 + np.exp(-(L - z * np.sqrt(np.maximum(var, 0.0)))))
+
+
+class PipelineCalibrator:
+    """Fit-on-gold calibration for the pipeline: turn the streams' sub-scores into
+    a calibrated P(true non-interaction) + lower bound, over a fixed feature order.
+
+    Features are logit(sub_score) per named stream, abstentions imputed to 0
+    (= logit(prior 0.5)). Fit on labeled pairs — gold negatives (y=1) and real
+    edges (y=0) scored through the same GRADED streams — then `transform` a
+    candidate's sub-score dict. This is the recommended integration for
+    `LogOddsStack`: the unsupervised pool is the right coordinate but not a
+    calibrated scale (docs/IG-FEATURES.md), so calibrate against labels here."""
+
+    def __init__(self, names: list[str], l2: float = 0.2, alpha: float = 0.05):
+        self.names = list(names)
+        self.stack = LogOddsStack(l2=l2, alpha=alpha)
+
+    def _feat(self, sub: dict) -> list[float]:
+        return [logit(sub[n]) if sub.get(n) is not None else 0.0 for n in self.names]
+
+    def fit(self, sub_scores: list[dict], y) -> "PipelineCalibrator":
+        Z = np.array([self._feat(s) for s in sub_scores], dtype=float)
+        self.stack.fit(Z, np.asarray(y, dtype=int), self.names)
+        return self
+
+    def transform(self, sub: dict) -> tuple[float, float]:
+        Z = np.array([self._feat(sub)], dtype=float)
+        return float(self.stack.proba(Z)[0]), float(self.stack.lcb(Z)[0])

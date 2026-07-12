@@ -25,6 +25,7 @@ from .entropy_fusion import (
 )
 from .logodds_fusion import (
     LogOddsStack,
+    PipelineCalibrator,
     logit,
     logodds_fuse,
     logodds_pool,
@@ -40,6 +41,7 @@ __all__ = [
     "entropy_weighted_fuse",
     "stream_disagreement",
     "LogOddsStack",
+    "PipelineCalibrator",
     "logit",
     "logodds_fuse",
     "logodds_pool",

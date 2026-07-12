@@ -20,7 +20,7 @@ from .candidates import generate_candidates
 from .fusion import fuse
 from .graph import TypedInteractionGraph
 from .ig.entropy_fusion import binary_entropy, entropy_weighted_fuse
-from .ig.logodds_fusion import logodds_fuse, logodds_pool, sigmoid
+from .ig.logodds_fusion import PipelineCalibrator, logodds_fuse, logodds_pool, sigmoid
 from .matching import Scored, degree_matched_eval, hard_train, select_train
 from .schema import NegativeRecord, StreamScore
 from .streams import Filter, Stage, build_filters
@@ -73,6 +73,16 @@ class PipelineConfig:
     #   scripts/eval_logodds.py); the pool alone can be worse-calibrated than the mean.
     fusion_mode: str = "mean"
     fusion_lam: float = 1.0              # entropy sharpness; 0 == "mean"
+    # calibration stage: fit a LogOddsStack on gold labels and emit a CALIBRATED
+    # confidence + confidence_lcb on records (the recommended log-odds integration —
+    # the unsupervised pool is the right coordinate but not a calibrated scale).
+    # Requires calibration_gold (true non-interactions); positives are sampled from
+    # the graph's own edges. Off by default (needs a gold-negative source).
+    calibrate: bool = False
+    calibration_gold: list[tuple[str, str]] | None = None
+    calibration_n_pos: int | None = None   # #positive edges to sample; None = #gold
+    calibration_l2: float = 0.2
+    calibration_alpha: float = 0.05
     # route pairs where two independent signals disagree by at least this margin to
     # the GATED review — that's where an independent signal's unique value lives
     # (docs/IG-FEATURES.md §3c). 0 disables.
@@ -199,6 +209,21 @@ def run_pipeline(
                            hardness=round(float(pct[i]), 4), sub_scores=sub,
                            degsum=graph.degree(u) + graph.degree(v)))
 
+    # --- CALIBRATION stage (opt-in): fit a LogOddsStack on gold labels and emit a
+    # CALIBRATED confidence + lower bound. The unsupervised log-odds pool is the
+    # right coordinate but not a calibrated scale (docs/IG-FEATURES.md), so we
+    # calibrate against labels: gold negatives (y=1) + sampled real edges (y=0),
+    # scored through the same GRADED streams as the candidates. Overwrites the
+    # heuristic fused confidence in place; hardness (a separate axis) is untouched.
+    calib = None
+    if cfg.calibrate and cfg.calibration_gold and graded_f and kept:
+        calib = _fit_calibrator(graph, graded_f, cfg)
+        if calib is not None:
+            for s in kept:
+                s.confidence, lcb = calib.transform(s.sub_scores)
+                s.confidence = round(s.confidence, 4)
+                s.confidence_lcb = round(lcb, 4)
+
     # Layer 5 — two products from the same pool. Match the eval set on a per-node
     # confounder statistic — graph degree by default (the PPI leakage confounder),
     # or any modality-supplied match_weight_fn.
@@ -256,9 +281,16 @@ def run_pipeline(
             if reviewed:
                 gated_reviewed += 1
             if merged:
-                s.confidence = _fuse_confidence(s.sub_scores, cfg.weights,
-                                                cfg.fusion_mode, cfg.fusion_lam,
-                                                s.conf_evidence)
+                # re-fuse with the gated stream(s) folded in; if a calibrator was
+                # fit, re-apply it so the emitted confidence stays calibrated.
+                if calib is not None:
+                    s.confidence, lcb = calib.transform(s.sub_scores)
+                    s.confidence = round(s.confidence, 4)
+                    s.confidence_lcb = round(lcb, 4)
+                else:
+                    s.confidence = _fuse_confidence(s.sub_scores, cfg.weights,
+                                                    cfg.fusion_mode, cfg.fusion_lam,
+                                                    s.conf_evidence)
 
     records: list[NegativeRecord] = []
     records += [_record(graph, s, "eval", cfg, score_names, gated_flags, gated_evidence, graded_flags)
@@ -345,6 +377,29 @@ def _contested(kept: list[Scored], pct: float,
     return uniq
 
 
+def _fit_calibrator(graph: TypedInteractionGraph, graded_f: list[Filter],
+                    cfg: PipelineConfig) -> PipelineCalibrator | None:
+    """Fit the calibration stack on gold negatives (y=1) and sampled real edges
+    (y=0), scored through the same GRADED streams as the candidates. Returns None
+    if there are too few labels to fit a stable model."""
+    names = sorted(f.name for f in graded_f)
+    gold = [(a, b) for (a, b) in cfg.calibration_gold
+            if graph.g.has_node(a) and graph.g.has_node(b)]
+    edges = list(graph.g.edges())
+    if len(gold) < 10 or len(edges) < 10:
+        return None
+    n_pos = cfg.calibration_n_pos or len(gold)
+    rng = np.random.default_rng(cfg.seed)
+    pos = [edges[i] for i in rng.choice(len(edges), size=min(n_pos, len(edges)), replace=False)]
+
+    def _sub(u, v):
+        return {f.name: f.score(graph, u, v).value for f in graded_f}
+
+    sub_scores = [_sub(u, v) for (u, v) in gold] + [_sub(u, v) for (u, v) in pos]
+    y = np.r_[np.ones(len(gold)), np.zeros(len(pos))]
+    return PipelineCalibrator(names, cfg.calibration_l2, cfg.calibration_alpha).fit(sub_scores, y)
+
+
 def _record(graph: TypedInteractionGraph, s: Scored, mode: str, cfg: PipelineConfig,
             score_names: list[str], gated_flags: dict, gated_evidence: dict,
             graded_flags: dict | None = None) -> NegativeRecord:
@@ -366,5 +421,5 @@ def _record(graph: TypedInteractionGraph, s: Scored, mode: str, cfg: PipelineCon
     return NegativeRecord(
         u=s.u, v=s.v, mode=mode, confidence=s.confidence, hardness=s.hardness,
         streams={n: s.sub_scores.get(n) for n in score_names},
-        provenance=prov, flags=flags,
+        provenance=prov, flags=flags, confidence_lcb=s.confidence_lcb,
     )

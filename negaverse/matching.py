@@ -25,6 +25,7 @@ class Scored:
     sub_scores: dict
     conf_evidence: dict = field(default_factory=dict)   # per-stream reported confidence
     degsum: float = 0.0      # endpoint degree sum (for PSM propensity matching)
+    confidence_lcb: float | None = None                 # calibrated lower bound (if fit)
 
 
 def degree_matched_eval(

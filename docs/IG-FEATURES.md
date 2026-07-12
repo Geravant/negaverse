@@ -349,8 +349,13 @@ labeled gold-N / held-out-edge pairs per seed; label 1 = non-interaction):
    scale: it *over-commits* (Brier 0.87, worse than the mean). Supervision /
    decorrelation is **mandatory**, not the optional afterthought the original
    sketch implied. Hence `fusion_mode="logodds"` ships opt-in and is **not** the
-   default; the recommended path is a calibration stage that fits `LogOddsStack`
-   on gold labels and writes `confidence` + `confidence_lcb`.
+   default. The recommended path — **now wired** — is a calibration *stage*:
+   `PipelineConfig(calibrate=True, calibration_gold=…)` fits a `LogOddsStack` on
+   gold negatives + sampled real edges (scored through the same GRADED streams)
+   and overwrites every emitted record's `confidence` with the calibrated `σ(L)`
+   plus a `confidence_lcb` (`pipeline._fit_calibrator`, `ig.PipelineCalibrator`).
+   Verified end-to-end on HuRI (300 emitted records, all `lcb ≤ confidence`; the
+   bound widens to a 0.47 gap for pairs in sparse feature regions).
 3. **The LCB is correct but negligible at this data density** — 21.6% vs 21.9% of
    real edges admitted at matched negative-retention; with 1275 points and 5
    features the coefficient uncertainty is tiny, so the floor ≈ the point
