@@ -93,10 +93,17 @@ def main(argv=None) -> None:
                 time.sleep(2 * (attempt + 1))
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
+    merged: dict[str, set[str]] = {}
+    if OUT.exists():                                    # merge, don't clobber other datasets
+        for line in OUT.read_text().splitlines():
+            if line.strip() and not line.startswith("#"):
+                node, comps = line.split("\t")[:2]
+                merged[node] = {c.strip() for c in comps.split(",") if c.strip()}
+    merged.update(mapping)
     with open(OUT, "w") as fh:
-        for node in sorted(mapping):
-            fh.write(f"{node}\t{','.join(sorted(mapping[node]))}\n")
-    print(f"wrote {len(mapping)}/{len(ids)} annotations to {OUT}")
+        for node in sorted(merged):
+            fh.write(f"{node}\t{','.join(sorted(merged[node]))}\n")
+    print(f"wrote {len(mapping)} new / {len(merged)} total annotations to {OUT}")
 
 
 if __name__ == "__main__":
