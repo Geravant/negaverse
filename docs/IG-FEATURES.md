@@ -31,6 +31,7 @@ set. Several features below therefore become two gates, one per product.
 | Ch5 Determinantal (DPP) selection | Diverse eval/train set curation | `ig/dpp.py` | **Modest on real embeddings; removes the worst near-duplicates.** Saturates at embedding rank — a small-set de-duplicator, not a full-scale selector. |
 | Fisher-information (D-optimal) selection | Pick negatives that constrain distinct downstream-model directions | `ig/fisher.py`, `scripts/eval_fisher.py` | **Measured NEGATIVE result — do not wire.** Highest diversity, but selects 73% of injected hidden positives; downstream AUROC collapses to ~0.26 under RF *and* LGBM. The objective is anti-aligned with safety; a hardness gate barely helps. |
 | Sinkhorn OT nuisance-matching | Multivariate distribution-match negatives to a target (degree × coverage × …) | `scripts/eval_psm_residual.py` (precondition test) | **Not built — precondition fails.** C2ST shows scalar PSM leaves only +0.02–0.03 AUC of residual *multivariate* imbalance; the dominant residual is scalar/structural (safe region lacks hub-degree pairs), which OT cannot fix either. |
+| Sparse proof fingerprint (grammar exp-1) | Branch-separated evidence (safe/risk/coverage/contradiction) as a safety model | `negaverse/grammar/features.py`, `scripts/eval_grammar.py` | **Idea confirmed, structure not yet earning its keep.** Beats the fused mean decisively (Brier 0.67→0.01, injection-FN 6.3%→0%) but ties the raw-signals+LGBM ablation — the win is "classifier + don't average", not proof structure. Gate on a richer evidence vocabulary before Fisher whitening. |
 | Ch1 Surprisal vs a frozen cloud | Resemblance to the positive manifold — over graph *and* sequence (ESM2) feature spaces | `ig/surprisal.py`, `scripts/eval_esm2_manifold.py` | **Gold-cloud = null (0.47). Graph manifold real (0.88). ESM2 sequence manifold is the *independent* axis (corr ~0.2) → 3-way fusion 0.81→0.88.** |
 | Ch7 Geometric routing (relative margin) | Margin between positive-like and negative-like clouds, not an absolute cutoff | `ig/margin.py` | Component of C's relative-margin score (0.95). |
 | Ch6 Recurrence / Hawkes | Corroboration: confidence = independent streams that echo the verdict | (design; uses `stream_disagreement`) | Precondition (stream independence) holds in negaverse. |
@@ -477,3 +478,47 @@ distribution *under* a safety gate (stacked, PSM). Objectives that maximise
 information or diversity without that gate select exactly the wrong pairs. The
 evaluate-each-step cadence, run against the existing injection backtest, is what
 separated the one real win from two theory-appealing dead ends.
+
+---
+
+## The learned-grammar arc — experiment 1 (sparse proof fingerprint)
+
+The Fisher *selector* is dead (above), but Fisher geometry as an evidence
+*representation* over a probabilistic proof grammar remains a distinct, viable
+hypothesis: the shipped rule stream averages every fired rule — and, fatally,
+SAFE and RISK evidence — into one mean, discarding which evidence combinations
+occurred, coverage/missingness, and contradictions. The staged plan (see
+`negaverse/grammar/`): (1) a sparse, branch-separated proof fingerprint;
+(2) only if it earns it, typed Horn/Datalog proofs, a class-conditional grammar
+likelihood, and Fisher-whitened proof embeddings.
+
+**Experiment 1** (`scripts/eval_grammar.py`, HuRI, 8k positives × 3 seeds;
+verified label = gold Negatome negatives vs held-out real edges; safety-only):
+
+| arm | AUROC | AUPRC | Brier | ECE | injected-pos FN% | protein-disjoint AUROC |
+|---|---|---|---|---|---|---|
+| fused (shipped mean) | 0.858 | 0.400 | 0.667 | 0.776 | 6.3 | — |
+| **raw signals + LGBM (ablation)** | **0.984** | **0.953** | **0.012** | 0.012 | **0.0** | 0.933 |
+| fingerprint + LR | 0.915 | 0.519 | 0.047 | 0.030 | 1.8 | 0.944 |
+| fingerprint + LGBM | 0.984 | 0.954 | 0.011 | 0.011 | 0.0 | 0.944 |
+
+**Verdict: the idea is confirmed, the *structure* is not yet earning its keep.**
+The fingerprint beats the shipped fused mean by a mile (Brier 0.67→0.01,
+injected-hidden-positive false-negative rate 6.3%→0%, and it holds up
+protein-disjoint at 0.94) — but it is **statistically tied with the raw-signals
+ablation**. So the entire win is *"use a classifier, and don't average SAFE and
+RISK into one blob"* — **not** the proof-grammar structure (per-rule firing,
+coverage, contradiction flags add nothing measurable here).
+
+Why: the current vocabulary is three `safer_negative` rules and no risk
+productions, so "grammar structure" has almost nothing to express that the raw
+{structured, topology, risk, hardness, rule} signals don't already carry.
+Whitening a three-rule grammar with a Fisher kernel would be singular and overfit
+rare rules — exactly the failure flagged for ~349 gold negatives. **The gating
+next step is therefore a richer evidence vocabulary** (risk productions:
+same-complex/CORUM, L3 paths, ESM2 positive-likeness; typed intermediate
+entities), *then* re-run this ablation. Only if branch-separated proof structure
+beats raw signals with a real vocabulary is Fisher-whitened grammar (arm 4)
+justified. The `separate safe/risk + calibrate` win itself is already largely
+delivered by the step-1 calibration stack; grammar exp-1's marginal product value
+over that is small today.
