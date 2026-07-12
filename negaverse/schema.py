@@ -49,7 +49,13 @@ class NegativeRecord:
     # downstream (−0.01 RF / −0.07 LGBM) and slightly less pure, so calibration must
     # not overwrite the selection signal. Both None unless a calibrator was fit on
     # gold labels (ig/logodds_fusion). confidence_calibrated = σ(L) point estimate;
-    # confidence_lcb = σ(L − z·sd), the floor that should *authorise* a label.
+    # confidence_lcb = σ(L − z·sd), a MODEL-BASED uncertainty floor — NOT a
+    # guaranteed contamination bound under dataset shift, and not yet an
+    # authorisation mechanism: nothing thresholds it into a label_status today, so
+    # calibration is currently a safety *diagnostic*. Explicit authorisation
+    # (τ chosen on a calibration fold → authorized/unverified/rejected) is a
+    # separate milestone; if it changes emitted membership it is a new selection
+    # arm and needs the full downstream evaluation again.
     confidence_calibrated: Optional[float] = None
     confidence_lcb: Optional[float] = None
 
