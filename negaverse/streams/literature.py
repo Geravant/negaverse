@@ -52,11 +52,17 @@ class LiteratureFilter(Filter):
     # --- persistent, feature-hashed cache (reused across runs) -----------
     def _feature_key(self, graph: TypedInteractionGraph, u: str, v: str) -> str:
         """Content hash of exactly what the judge sees for this pair — so an
-        identical pair+context reuses the verdict, and a changed context re-judges."""
+        identical pair+context reuses the verdict, and a changed context
+        re-judges. Must include everything `score()` puts in `ctx` (e.g.
+        `self.names`), not just graph-derived features — otherwise adding
+        gene names later (or any other context enrichment) silently keeps
+        serving pre-enrichment verdicts from cache forever, since the key
+        never changes to reflect what the judge now actually sees."""
         a, b = sorted((u, v))
         feats = {"a": a, "b": b,
                  "a_type": graph.node_type.get(a), "b_type": graph.node_type.get(b),
                  "a_deg": graph.degree(a), "b_deg": graph.degree(b),
+                 "a_name": self.names.get(u), "b_name": self.names.get(v),
                  "model": self.model, "votes": self.votes}
         return hashlib.sha1(json.dumps(feats, sort_keys=True).encode()).hexdigest()
 

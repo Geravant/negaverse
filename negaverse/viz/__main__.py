@@ -17,6 +17,7 @@ from ..graph import TypedInteractionGraph
 from ..pipeline import PipelineConfig, run_pipeline
 from ..streams import build_filters, LiteratureFilter
 from .. import eval as ev
+from ..cli import _collect_literature
 from ..io import load_sars_cov2_graph, load_huri_graph
 from . import render_all, build_report
 
@@ -35,27 +36,48 @@ def _load_dotenv(path: str | Path = ".env") -> None:
             os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
 
 
+def _combined_name(symbol: str, synonyms: list[str], full_name: str) -> str:
+    """One display string combining symbol + full protein name + synonyms, so
+    the literature judge gets more to recognize the protein by and reason
+    about its function than a bare symbol alone (e.g. "TP53 — Cellular tumor
+    antigen p53 (aka P53, TRP53)")."""
+    s = symbol
+    if full_name:
+        s += f" — {full_name}"
+    if synonyms:
+        s += f" (aka {', '.join(synonyms)})"
+    return s
+
+
 def _load_names(dataset: str) -> dict:
-    """id -> human-readable gene symbol so the literature judge can reason.
-    HuRI nodes are ENSG ids; DRYAD nodes are UniProt accessions (mapped via ENSG)."""
-    ensg_sym = {}
+    """id -> human-readable gene identity (symbol + full name + synonyms) so
+    the literature judge can reason. HuRI nodes are ENSG ids; DRYAD nodes are
+    UniProt accessions (mapped via ENSG). Reads ensg_symbol.tsv's
+    ensg<TAB>symbol<TAB>synonyms(comma-sep)<TAB>full_name format
+    (scripts/build_ensg_symbol_map.py)."""
+    ensg_name = {}
     f = _MAP_DIR / "ensg_symbol.tsv"
     if f.exists():
         for line in f.read_text().splitlines():
-            if "\t" in line and not line.startswith("#"):
-                e, s = line.split("\t")[:2]
-                ensg_sym[e.strip()] = s.strip()
+            if not line.strip() or line.startswith("#") or "\t" not in line:
+                continue
+            parts = line.split("\t")
+            ensg, sym = parts[0].strip(), parts[1].strip()
+            syns = [s.strip() for s in parts[2].split(",")] if len(parts) > 2 and parts[2] else []
+            full = parts[3].strip() if len(parts) > 3 else ""
+            if sym:
+                ensg_name[ensg] = _combined_name(sym, syns, full)
     if dataset == "huri":
-        return ensg_sym
-    if dataset == "dryad":                       # UniProt -> (first) ENSG -> symbol
+        return ensg_name
+    if dataset == "dryad":                       # UniProt -> (first) ENSG -> name
         names, up = {}, _MAP_DIR / "uniprot_ensg_human.tsv"
         if up.exists():
             for line in up.read_text().splitlines():
                 if "\t" in line and not line.startswith("#"):
                     acc, ensgs = line.split("\t")[:2]
-                    sym = ensg_sym.get(ensgs.split(",")[0].strip())
-                    if sym:
-                        names[acc.strip()] = sym
+                    name = ensg_name.get(ensgs.split(",")[0].strip())
+                    if name:
+                        names[acc.strip()] = name
         return names
     return {}
 
@@ -191,6 +213,8 @@ def main(argv=None) -> None:
     validation = {
         "leakage_known_positive": ev.leakage(graph, result.records),
         "hardness_split": ev.hardness_split(result.records),
+        "literature": ({"status": "disabled"} if args.no_literature
+                       else _collect_literature(result.records, out)),
     }
     (out / "stats.json").write_text(json.dumps(
         {"stats": result.stats, "validation": validation}, indent=2))
