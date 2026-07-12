@@ -192,12 +192,9 @@ def _select_mixture(pool, n, props, rng):
     return list(chosen.values())[:n]
 
 
-def _select_counterfactual(pool, pos_degsums, n, rng):
-    """Matched-counterfactual negatives (Tier 3): sample veto-clean non-edges whose
-    endpoint-degree sum MATCHES the training positives' distribution. This preserves
-    the degree/coverage nuisance that random over-samples toward isolated pairs — so
-    the negatives resemble positives on the shortcut but remain defensible non-edges."""
-    clean = [r for r in pool if not r["vetoed"]]
+def _degree_match(clean, pos_degsums, n, rng):
+    """Greedy 1:1 nearest-degree-sum match of `clean` candidates to the positives'
+    degree distribution (the propensity/nuisance covariate we match on)."""
     buckets: dict = {}
     for r in clean:
         buckets.setdefault(r["degsum"], []).append(r)
@@ -220,6 +217,24 @@ def _select_counterfactual(pool, pos_degsums, n, rng):
             k = keys[np.argmin(np.abs(keys - d))]
         out.append(buckets[k].pop())
     return [(r["u"], r["v"]) for r in out][:n]
+
+
+def _select_counterfactual(pool, pos_degsums, n, rng):
+    """Matched-counterfactual (Tier 3): degree-match to positives from the WHOLE
+    veto-clean pool. Loses — matching pulls in positive-like pairs that are hidden
+    positives (measured ~48% contamination). The problem this PSM fixes."""
+    return _degree_match([r for r in pool if not r["vetoed"]], pos_degsums, n, rng)
+
+
+def _select_psm(pool, pos_degsums, n, rng, cap):
+    """Propensity-score matching (the fix). Same degree-matching to positives, but the
+    candidate pool is restricted to the VERIFIED-CLEAN region first: veto-clean AND
+    hardness ≤ cap (the injection backtest measured that hidden positives concentrate
+    in the high-hardness/topology-risk tail, so capping hardness ≈ 0 contamination).
+    Safety authorises the label (clean pool); matching only adds difficulty. Lowering
+    `cap` trades hardness for purity — the sweep shows the trade-off."""
+    clean = [r for r in pool if not r["vetoed"] and r["hardness"] <= cap]
+    return _degree_match(clean, pos_degsums, n, rng)
 
 
 def _hits(y, s, k, positive=True):
@@ -287,7 +302,8 @@ def _injection_backtest(all_pos, gold, nodes, full_pos_set, args):
     negaverse makes is that it avoids hidden positives; this tests it directly.
     Lower `selected%` = better. Expectation: topology_hard picks the MOST (hidden
     positives are positive-like ⇒ hard); safe/stacked/counterfactual pick fewer."""
-    arms = ["random_veto", "topology_hard", "topology_safe", "stacked", "counterfactual"]
+    arms = ["random_veto", "topology_hard", "topology_safe", "stacked", "counterfactual",
+            "psm[cap=0.7]", "psm[cap=0.5]"]
     rates = {a: [] for a in arms}
     dmg = {(a, m): [] for a in arms for m in args.models}       # downstream AUROC on the injected pool
     print(f"INJECTION BACKTEST — inject K={args.inject_k} hidden positives (veto-bypassed).\n"
@@ -320,6 +336,9 @@ def _injection_backtest(all_pos, gold, nodes, full_pos_set, args):
         for a in arms:
             if a == "counterfactual":
                 neg = _select_counterfactual(pool, pos_degsums, n_neg, np.random.default_rng(seed))
+            elif a.startswith("psm[cap="):
+                cap = float(a.split("=")[1].rstrip("]"))
+                neg = _select_psm(pool, pos_degsums, n_neg, np.random.default_rng(seed), cap)
             else:
                 neg = _select(pool, a, n_neg, np.random.default_rng(seed))
             sel_inj = sum(1 for uv in neg if frozenset(uv) in inj_keys)
@@ -355,6 +374,8 @@ def main():
     ap.add_argument("--injection-test", action="store_true",
                     help="inject K known hidden positives; report which arm wrongly selects them")
     ap.add_argument("--inject-k", type=int, default=1000)
+    ap.add_argument("--psm", action="store_true",
+                    help="propensity-score-matched negatives (clean-pool degree match); sweep hardness cap")
     args = ap.parse_args()
 
     global _RULES
@@ -368,6 +389,11 @@ def main():
         for r in _RULES:
             spec[f"stacked[-{r.id}]"] = [x for x in all_ids if x != r.id]
         spec["stacked[NO rules]"] = []
+    elif args.psm:
+        spec = {"random_veto": "builtin", "topology_safe": "builtin", "stacked": "builtin",
+                "counterfactual (cap=1.0)": ("cf",)}
+        for cap in [0.9, 0.7, 0.5]:
+            spec[f"psm[cap={cap}]"] = ("psm", cap)
     elif args.mixture:
         spec = {"random_veto": "builtin", "topology_safe": "builtin", "stacked": "builtin",
                 "counterfactual": ("cf",)}
@@ -430,6 +456,8 @@ def main():
                 neg = _select_mixture(pool, n_neg, sp[1], np.random.default_rng(seed))
             elif isinstance(sp, tuple) and sp[0] == "cf":
                 neg = _select_counterfactual(pool, pos_degsums, n_neg, np.random.default_rng(seed))
+            elif isinstance(sp, tuple) and sp[0] == "psm":
+                neg = _select_psm(pool, pos_degsums, n_neg, np.random.default_rng(seed), sp[1])
             else:
                 neg = _select_stacked_subset(pool, n_neg, sp)
             if not neg:
