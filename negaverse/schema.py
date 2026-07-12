@@ -38,15 +38,19 @@ class NegativeRecord:
     u: str
     v: str
     mode: Mode
-    confidence: float                     # calibrated [0,1] that the pair is a true non-interaction
+    confidence: float                     # heuristic ranking score; DRIVES selection (fused streams)
     hardness: float                       # distance-to-positive-manifold percentile [0,1]
     streams: dict[str, Optional[float]]   # per-stream sub-scores: structured / literature / topology
     provenance: dict[str, Any]            # filters fired, evidence, source graph, versions
     flags: list[str] = field(default_factory=list)
-    # calibrated lower-confidence bound σ(L − z·sd) from LogOddsStack — the floor
-    # that should *authorise* a label. None unless a calibrator was fit on gold
-    # labels (ig/logodds_fusion, scripts/eval_logodds.py). Separates uncertainty
-    # from the point estimate, the axis the schema previously conflated.
+    # Calibrated safety, for AUTHORISING/reporting a label — deliberately SEPARATE
+    # from `confidence`, which drives selection. Measured (scripts/bench_corrected.py
+    # --calibrated-selection): ranking selection by the calibrated score is WORSE
+    # downstream (−0.01 RF / −0.07 LGBM) and slightly less pure, so calibration must
+    # not overwrite the selection signal. Both None unless a calibrator was fit on
+    # gold labels (ig/logodds_fusion). confidence_calibrated = σ(L) point estimate;
+    # confidence_lcb = σ(L − z·sd), the floor that should *authorise* a label.
+    confidence_calibrated: Optional[float] = None
     confidence_lcb: Optional[float] = None
 
     def as_row(self) -> dict[str, Any]:

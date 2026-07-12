@@ -216,6 +216,9 @@ def run_pipeline(
     # calibrate against labels: gold negatives (y=1) + sampled real edges (y=0),
     # scored through the same GRADED streams as the candidates. Overwrites the
     # heuristic fused confidence in place; hardness (a separate axis) is untouched.
+    # Calibration populates SEPARATE authorising/reporting fields; it must NOT
+    # overwrite `confidence`, which drives selection — ranking selection by the
+    # calibrated score measured worse downstream (bench --calibrated-selection).
     calib = None
     if cfg.calibrate and graded_f and kept:
         gold = _resolve_calibration_gold(graph, cfg)
@@ -223,8 +226,8 @@ def run_pipeline(
             calib = _fit_calibrator(graph, graded_f, cfg, gold)
         if calib is not None:
             for s in kept:
-                s.confidence, lcb = calib.transform(s.sub_scores)
-                s.confidence = round(s.confidence, 4)
+                cal_p, lcb = calib.transform(s.sub_scores)
+                s.confidence_calibrated = round(cal_p, 4)
                 s.confidence_lcb = round(lcb, 4)
 
     # Layer 5 — two products from the same pool. Match the eval set on a per-node
@@ -284,16 +287,15 @@ def run_pipeline(
             if reviewed:
                 gated_reviewed += 1
             if merged:
-                # re-fuse with the gated stream(s) folded in; if a calibrator was
-                # fit, re-apply it so the emitted confidence stays calibrated.
+                # re-fuse the selection-driving confidence with the gated stream(s)
+                # folded in; re-apply the calibrator to the SEPARATE fields.
+                s.confidence = _fuse_confidence(s.sub_scores, cfg.weights,
+                                                cfg.fusion_mode, cfg.fusion_lam,
+                                                s.conf_evidence)
                 if calib is not None:
-                    s.confidence, lcb = calib.transform(s.sub_scores)
-                    s.confidence = round(s.confidence, 4)
+                    cal_p, lcb = calib.transform(s.sub_scores)
+                    s.confidence_calibrated = round(cal_p, 4)
                     s.confidence_lcb = round(lcb, 4)
-                else:
-                    s.confidence = _fuse_confidence(s.sub_scores, cfg.weights,
-                                                    cfg.fusion_mode, cfg.fusion_lam,
-                                                    s.conf_evidence)
 
     records: list[NegativeRecord] = []
     records += [_record(graph, s, "eval", cfg, score_names, gated_flags, gated_evidence, graded_flags)
@@ -441,5 +443,6 @@ def _record(graph: TypedInteractionGraph, s: Scored, mode: str, cfg: PipelineCon
     return NegativeRecord(
         u=s.u, v=s.v, mode=mode, confidence=s.confidence, hardness=s.hardness,
         streams={n: s.sub_scores.get(n) for n in score_names},
-        provenance=prov, flags=flags, confidence_lcb=s.confidence_lcb,
+        provenance=prov, flags=flags,
+        confidence_calibrated=s.confidence_calibrated, confidence_lcb=s.confidence_lcb,
     )

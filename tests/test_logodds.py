@@ -115,15 +115,16 @@ def test_pipeline_calibration_stage_end_to_end():
                          calibrate=True, calibration_gold=gold)
     r_base = run_pipeline(graph, base)
     r_cal = run_pipeline(graph, cfg)
-    lcbs = [rec.confidence_lcb for rec in r_cal.records]
-    assert all(x is not None for x in lcbs)                       # stage populated the LCB
-    assert all(0.0 <= rec.confidence_lcb <= rec.confidence <= 1.0 for rec in r_cal.records)
-    assert len({round(rec.confidence, 3) for rec in r_cal.records}) > 1   # not a constant
-    # calibration changed the confidence scale vs the plain mean
-    base_conf = {(x.u, x.v): x.confidence for x in r_base.records}
-    changed = [rec for rec in r_cal.records
-               if (rec.u, rec.v) in base_conf and abs(rec.confidence - base_conf[(rec.u, rec.v)]) > 1e-6]
-    assert changed
+    # calibration populates SEPARATE authorising fields, both present and ordered
+    assert all(rec.confidence_calibrated is not None and rec.confidence_lcb is not None
+               for rec in r_cal.records)
+    assert all(0.0 <= rec.confidence_lcb <= rec.confidence_calibrated <= 1.0 for rec in r_cal.records)
+    assert len({round(rec.confidence_calibrated, 3) for rec in r_cal.records}) > 1   # not a constant
+    # base run (calibrate=False) leaves the calibrated fields unset
+    assert all(rec.confidence_calibrated is None and rec.confidence_lcb is None
+               for rec in r_base.records)
+    # the calibrated estimate is a DISTINCT axis from the selection-driving confidence
+    assert any(abs(rec.confidence_calibrated - rec.confidence) > 1e-6 for rec in r_cal.records)
 
 
 def test_gold_recall_scale_robust():

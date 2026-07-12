@@ -352,18 +352,30 @@ labeled gold-N / held-out-edge pairs per seed; label 1 = non-interaction):
    scale: it *over-commits* (Brier 0.87, worse than the mean). Supervision /
    decorrelation is **mandatory**, not the optional afterthought the original
    sketch implied. Hence the raw `fusion_mode="logodds"` pool ships opt-in and is
-   **not** the default. The calibration *stage*, by contrast, is now **on by
-   default** (`PipelineConfig.calibrate=True`): it fits a `LogOddsStack` on gold
-   negatives + sampled real edges (scored through the same GRADED streams) and
-   overwrites every record's `confidence` with the calibrated `σ(L)` plus a
-   `confidence_lcb` (`pipeline._fit_calibrator`, `ig.PipelineCalibrator`). Gold is
-   auto-resolved from in-space Negatome for a PPI graph and **degrades gracefully
-   to the heuristic mean** when none is in-space (verified: HuRI default run
-   auto-calibrates all records; the viral-host demo falls back to the mean). All
-   `lcb ≤ confidence`; the bound widens to a 0.47 gap in sparse feature regions.
-   Consumers of `confidence` are ranking/quantile-based (scale-invariant); the one
-   absolute-threshold reader, `eval.gold_recall`, was made scale-robust (relative
-   to the emitted pool's confidence quantile).
+   **not** the default. The calibration *stage* is now **on by default**
+   (`PipelineConfig.calibrate=True`): it fits a `LogOddsStack` on gold negatives +
+   sampled real edges (scored through the same GRADED streams) and populates two
+   **separate** authorising/reporting fields, `confidence_calibrated = σ(L)` and
+   `confidence_lcb = σ(L − z·sd)` (`pipeline._fit_calibrator`,
+   `ig.PipelineCalibrator`). Gold is auto-resolved from in-space Negatome for a PPI
+   graph and **degrades gracefully to the heuristic mean** when none is in-space
+   (verified: HuRI default run auto-calibrates all records; the viral-host demo
+   falls back). `lcb ≤ confidence_calibrated` always; the bound widens to a 0.47
+   gap in sparse feature regions.
+
+   **Why separate fields, not an overwrite of `confidence`** — measured, not
+   assumed. `scripts/bench_corrected.py --calibrated-selection` compared the
+   shipped mean-ranked `stacked`/`topology_safe` arms against calibration-stack-
+   ranked versions (calibrator fit on a gold fold DISJOINT from the downstream
+   test fold; HuRI, 8k pos × 3 seeds). Ranking selection by the calibrated score is
+   **worse** downstream — AUROC −0.010 (RF) / **−0.070 (LGBM)** and slightly less
+   pure (0.3 vs 0.0 hidden positives leaked). So calibration is for *authorising*
+   a label (threshold the LCB), **not** for *ranking* which negatives to select;
+   overwriting `confidence` would have silently regressed the training product.
+   With the split, a default (calibrated) run emits the **identical** set to a
+   mean run — calibration is purely additive. The one absolute-threshold reader,
+   `eval.gold_recall`, was also made scale-robust (relative to the pool's
+   confidence quantile).
 3. **The LCB is correct but negligible at this data density** — 21.6% vs 21.9% of
    real edges admitted at matched negative-retention; with 1275 points and 5
    features the coefficient uncertainty is tiny, so the floor ≈ the point

@@ -56,6 +56,7 @@ def _make_model(kind: str, seed: int):
     raise ValueError(kind)
 from negaverse.candidates import generate_candidates
 from negaverse.graph import TypedInteractionGraph
+from negaverse.ig.logodds_fusion import PipelineCalibrator
 from negaverse.io import load_huri_graph, load_negatome_in_ensembl_space
 from negaverse.rule_engine import load_rules
 from negaverse.streams import build_filters
@@ -144,7 +145,54 @@ def _select(pool, arm, n, rng):
         hard = sorted(clean, key=lambda r: r["hardness"], reverse=True)[:max(4 * n, n)]
         hard.sort(key=lambda r: r["conf"], reverse=True)          # re-rank hard tail by biology conf
         return [(r["u"], r["v"]) for r in hard[:n]]
+    if arm == "stacked_calibrated":                              # stacked, but ranked by the calibration stack
+        hard = sorted(clean, key=lambda r: r["hardness"], reverse=True)[:max(4 * n, n)]
+        hard.sort(key=lambda r: r.get("conf_cal", r["conf"]), reverse=True)
+        return [(r["u"], r["v"]) for r in hard[:n]]
+    if arm == "topology_safe_calibrated":
+        s = sorted(clean, key=lambda r: r.get("conf_cal", r["conf"]), reverse=True)
+        return [(r["u"], r["v"]) for r in s[:n]]
     raise ValueError(arm)
+
+
+def _sub_from_row(row, rule_ids):
+    """Graded sub-scores {structured, topology, rules(combined)} for the calibration
+    stack — the same feature space the pipeline's calibration stage sees."""
+    fired = [(w, v) for rid, (w, v) in row["rules"].items() if rid in rule_ids]
+    crv = (sum(w * v for w, v in fired) / (sum(w for w, _ in fired) or 1)) if fired else None
+    return {"structured": row["struct"], "topology": row["topo"], "rules": crv}
+
+
+def _fit_pool_calibrator(tr_pos, gold_fit, seed, full_pos_set, rule_ids, test_excl):
+    """Fit a PipelineCalibrator on a gold fold (y=1) + sampled real edges (y=0),
+    scored through the same streams — the leak-free analogue of the pipeline's
+    default calibration stage. gold_fit MUST be disjoint from the gold used as the
+    downstream test set, else selection sees the test distribution."""
+    tr_nodes = {n for e in tr_pos for n in e}
+    gold_fit = [p for p in gold_fit if set(p) <= tr_nodes]
+    if len(gold_fit) < 15:
+        return None
+    rng = np.random.default_rng(seed)
+    edges = list(tr_pos)
+    pos = [edges[i] for i in rng.choice(len(edges), size=min(len(gold_fit), len(edges)), replace=False)]
+    pool = _score_pool(tr_pos, 1500, seed, full_pos_set, exclude=test_excl,
+                       inject=list(gold_fit) + list(pos))
+    by = {frozenset((r["u"], r["v"])): r for r in pool if r.get("injected")}
+    subs, y = [], []
+    for p in gold_fit:
+        if frozenset(p) in by:
+            subs.append(_sub_from_row(by[frozenset(p)], rule_ids)); y.append(1)
+    for p in pos:
+        if frozenset(p) in by:
+            subs.append(_sub_from_row(by[frozenset(p)], rule_ids)); y.append(0)
+    if len(set(y)) < 2 or len(y) < 20:
+        return None
+    return PipelineCalibrator(["structured", "topology", "rules"], l2=0.2).fit(subs, np.array(y))
+
+
+def _apply_calibrator(pool, calib, rule_ids):
+    for r in pool:
+        r["conf_cal"], _ = calib.transform(_sub_from_row(r, rule_ids))
 
 
 def _select_stacked_subset(pool, n, rule_ids):
@@ -378,6 +426,9 @@ def main():
                     help="propensity-score-matched negatives (clean-pool degree match); sweep hardness cap")
     ap.add_argument("--eval-match", action="store_true",
                     help="degree-match negatives to a HELD-OUT fold of the gold negatives (eval population)")
+    ap.add_argument("--calibrated-selection", action="store_true",
+                    help="compare mean-ranked vs calibration-stack-ranked selection (stacked & topology_safe); "
+                         "the calibrator is fit on a gold fold DISJOINT from the downstream test fold")
     args = ap.parse_args()
 
     global _RULES
@@ -405,6 +456,10 @@ def main():
                 "counterfactual": ("cf",)}
         for rep, safe, hard in [(0.60, 0.30, 0.10), (0.70, 0.20, 0.10), (0.50, 0.30, 0.20)]:
             spec[f"mix[{int(rep*100)}/{int(safe*100)}/{int(hard*100)}]"] = ("mix", (rep, safe, hard))
+    elif args.calibrated_selection:
+        spec = {"random_veto": "builtin", "topology_safe": "builtin",
+                "topology_safe_calibrated": "builtin", "stacked": "builtin",
+                "stacked_calibrated": "builtin"}
     else:
         spec = {a: "builtin" for a in ARMS}
     arm_list = list(spec)
@@ -451,12 +506,25 @@ def main():
         # eval-match: split gold into a MATCH fold (target distribution) and a disjoint TEST fold
         gold_eval = gold_s
         match_degsums = []
+        gold_fit = []
         if args.eval_match:
             h = len(gold_s) // 2
             match_gold, gold_eval = gold_s[:h], gold_s[h:]
             _dgm = dict(nx.Graph(tr_pos).degree())
             match_degsums = [_dgm.get(u, 0) + _dgm.get(v, 0) for (u, v) in match_gold]
+        if args.calibrated_selection:
+            # fit the calibrator on a DISJOINT gold fold; test all arms on the other
+            h = len(gold_s) // 2
+            gold_fit, gold_eval = gold_s[:h], gold_s[h:]
         pool = _score_pool(tr_pos, args.max_pool, seed, full_pos_set, exclude=test_excl)
+        if args.calibrated_selection:
+            _cal = _fit_pool_calibrator(tr_pos, gold_fit, seed, full_pos_set,
+                                        [r.id for r in _RULES], test_excl)
+            if _cal is not None:
+                _apply_calibrator(pool, _cal, [r.id for r in _RULES])
+            print(f"  [calibrated-selection] seed {seed}: calibrator fit="
+                  f"{'OK' if _cal is not None else 'NONE (fell back to mean)'}  "
+                  f"gold_fit={len(gold_fit)} gold_eval={len(gold_eval)}")
         n_neg = int(len(tr_pos))                                  # one negative per training positive
         _dg = dict(nx.Graph(tr_pos).degree())
         pos_degsums = [_dg.get(u, 0) + _dg.get(v, 0) for (u, v) in tr_pos]
