@@ -127,6 +127,35 @@ def test_pipeline_calibration_stage_end_to_end():
     assert any(abs(rec.confidence_calibrated - rec.confidence) > 1e-6 for rec in r_cal.records)
 
 
+def test_calibration_does_not_change_selection():
+    """Membership invariance: with calibration ON (and actually fitting) the emitted
+    records — ordered (u, v, mode) — are IDENTICAL to a calibrate=False run. This is
+    the guarantee behind 'calibration is purely additive' (bench --calibrated-selection
+    showed calibration-driven selection is worse downstream, so it must not touch it)."""
+    from negaverse import run_pipeline, PipelineConfig
+    from negaverse.io import load_sars_cov2_graph
+    graph = load_sars_cov2_graph()
+    edges = {frozenset(e) for e in graph.g.edges()}
+    gold = []
+    for a in graph.nodes_of_type("viral"):
+        for b in graph.nodes_of_type("host"):
+            if frozenset((a, b)) not in edges:
+                gold.append((a, b))
+            if len(gold) >= 60:
+                break
+        if len(gold) >= 60:
+            break
+    common = dict(n_eval=120, n_train=120, seed=0, match_on_type="viral")
+    on = run_pipeline(graph, PipelineConfig(**common, calibrate=True, calibration_gold=gold))
+    off = run_pipeline(graph, PipelineConfig(**common, calibrate=False))
+    assert [(r.u, r.v, r.mode) for r in on.records] == [(r.u, r.v, r.mode) for r in off.records]
+    # calibration actually fired (else the invariance is trivially true)
+    assert any(r.confidence_calibrated is not None for r in on.records)
+    # and the selection-driving confidence is untouched by calibration
+    off_conf = {(r.u, r.v): r.confidence for r in off.records}
+    assert all(abs(r.confidence - off_conf[(r.u, r.v)]) < 1e-9 for r in on.records)
+
+
 def test_gold_recall_scale_robust():
     """gold_recall's default (quantile) path is invariant to a monotone rescale of
     confidence — the property that makes it safe under calibration."""

@@ -71,9 +71,10 @@ def _xfit(model_fn, X, y, seed):
     return p
 
 
-def _protein_disjoint_auroc(X, y, keys, seed, folds=5):
+def _protein_disjoint_auroc(X, y, keys, seed, model_fn, folds=5):
     """AUROC under splits where BOTH endpoints of a test pair are held out of
-    training — no protein appears in both, so no hub memorisation."""
+    training — no protein appears in both, so no hub memorisation. `model_fn` must
+    be the SAME learner as the arm being reported (else the number is mislabelled)."""
     prots = sorted({p for k in keys for p in k})
     rng = np.random.default_rng(seed)
     assign = {p: int(rng.integers(folds)) for p in prots}
@@ -83,7 +84,7 @@ def _protein_disjoint_auroc(X, y, keys, seed, folds=5):
         tr = np.array([all(assign[p] != f for p in k) for k in keys])
         if te.sum() < 15 or tr.sum() < 30 or len(set(y[te])) < 2 or len(set(y[tr])) < 2:
             continue
-        m = LogisticRegression(C=1.0, max_iter=2000).fit(X[tr], y[tr])
+        m = model_fn().fit(X[tr], y[tr])
         aucs.append(roc_auc_score(y[te], m.predict_proba(X[te])[:, 1]))
     return float(np.mean(aucs)) if aucs else float("nan")
 
@@ -170,7 +171,9 @@ def main():
             pi = inj_pred[a]
             M[a]["fn_inj"].append(float(np.mean(pi >= tau)) if len(pi) else float("nan"))
             Xpd = Xfp if a.startswith("fingerprint") else (Xraw if a == "raw+LGBM" else None)
-            M[a]["pdisj"].append(_protein_disjoint_auroc(Xpd, y, lab_keys, seed)
+            pd_model = ((lambda: LogisticRegression(C=1.0, max_iter=2000)) if a.endswith("+LR")
+                        else (lambda: _make_lgbm(seed)))
+            M[a]["pdisj"].append(_protein_disjoint_auroc(Xpd, y, lab_keys, seed, pd_model)
                                  if Xpd is not None else float("nan"))
         print(f"  seed {seed}: labeled={len(y)} (neg={int(y.sum())}/pos={int((1-y).sum())})  "
               f"injected={len(inj_rows)}")

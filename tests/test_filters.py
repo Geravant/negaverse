@@ -47,6 +47,8 @@ def test_new_graded_filter_flows_through_without_pipeline_edits():
         name = "const_test"
         stage = Stage.GRADED
         modalities = frozenset({"ppi"})
+        default = False        # test-only: buildable by name, never in the default selection
+                               # (else it pollutes other tests' default pipelines)
 
         def score(self, graph, u, v):
             return StreamScore(self.name, value=0.5)
