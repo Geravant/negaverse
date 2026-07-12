@@ -105,13 +105,34 @@
     0.7, i.e. STRING's own "high confidence" cutoff) used as known positives.
     STRING's native IDs are Ensembl protein IDs prefixed with taxid (e.g.
     9606.ENSP00000269305) — resolve to UniProt via STRING's own
-    protein.aliases file before placing at `path`; see the low-confidence
+    protein.aliases file before placing at `path`; see string_experimental_high_confidence
+    below (a stricter, direct-evidence-only sibling) and the low-confidence
     (<0.15) non-interaction threshold instead in rules/ppi.yaml
     (string_low_confidence_non_interaction) — a different mechanism, not this
     known-positive list.
   source: "STRING v12.0 (physical subnetwork), verified 2026-07-10:
     https://stringdb-downloads.org/download/protein.physical.links.v12.0/9606.protein.physical.links.v12.0.txt.gz
     (id mapping: https://stringdb-downloads.org/download/protein.aliases.v12.0/9606.protein.aliases.v12.0.txt.gz)"
+
+- name: string_experimental_high_confidence
+  modality: ppi
+  enabled: true
+  path: local-docs/string/string_experimental_high_confidence_pairs.tsv
+  id_space: uniprot
+  description: >
+    STRING pairs with direct experimental (wet-lab assay) evidence > 0.9 on
+    STRING's `experimental` channel specifically — not `combined_score`, which
+    blends in weaker indirect evidence (text-mining, coexpression) that
+    shouldn't count as strongly as direct assay support. This level of direct
+    experimental evidence is treated as a known positive (plain membership,
+    outright veto) rather than a graded rule-engine signal — mirrors how
+    BioGRID/IntAct documented interactions are already handled above. See
+    rules/ppi.yaml's string_low_confidence_non_interaction for the
+    complementary weak-negative threshold (<0.15) on this same channel.
+  source: "STRING v12.0 (physical subnetwork), https://string-db.org/,
+    experimental channel > 0.9 (raw > 900). Built by
+    scripts/build_known_positive_sources.py — 24,266 unique UniProt pairs as
+    of the v12.0 human links file."
 
 # --- pli: protein-ligand gold-standard databases -----------------------------
 

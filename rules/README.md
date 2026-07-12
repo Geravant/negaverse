@@ -58,8 +58,8 @@ sourced from external files/DBs.
 
 **Pairwise annotations** (`build_pair_annotation_table()`, same file) are a second,
 separate mechanism for fields whose value depends on *both* entities in a pair, not
-one node alone — e.g. `evolutionary_coupling_score_with_b`
-(`scripts/compute_evolutionary_coupling.py`). These load from
+one node alone — e.g. `string_experimental_score_with_b`
+(`scripts/compute_string_experimental.py`). These load from
 `node_a<TAB>node_b<TAB>value` files and get merged onto the right entity's record
 per-pair, at score time, by `negaverse/streams/rules.py::_RuleFilterBase` — not
 onto the shared per-node cache, since the same node needs a different value
@@ -80,16 +80,29 @@ a topology rule works in production.
 The generic loader + evaluator + `RuleGradedFilter`/`RuleVetoFilter` are **built**:
 every rule here becomes a filter automatically, no code. 7 rules exist across
 `ppi.yaml`/`pli.yaml`; `colocalization_mismatch` is live wherever GO
-cellular-component annotations are populated. Most of the rest abstain because
-their annotation field is genuinely unsourced (`TODO` in `source`) or simply
-hasn't been computed yet for the graph in question — `hydrophobicity_interface`
-is calibrated and has a real loader (`scripts/compute_surface_hydrophobicity.py`)
-but still abstains until someone runs it for their graph's nodes.
-`evolutionary_coupling_absence` similarly has a real, implemented pipeline
-(`scripts/compute_evolutionary_coupling.py`, Evolutionary Rate Covariation via
-RERconverge) but hasn't been calibrated against gold-standard PPI data yet — its
-threshold is still a placeholder. (A topology rule mirroring `TopologyFilter`'s
-`no_overlap` case, `no_shared_neighbors_low_expected_edge`, previously existed here
-and was removed: `TopologyFilter` already computes that exact signal more
-rigorously as an independent stream, so the YAML rule only double-counted it rather
-than adding new evidence — see `AUTHORING.md` Step 5.)
+cellular-component annotations are populated (calibrated: AUROC 0.906/0.875 on
+DRYAD, weaker on UPNA-PPI — see its `rationale`). Most of the rest abstain
+because their annotation field is genuinely unsourced (`TODO` in `source`) or
+simply hasn't been computed yet for the graph in question —
+`hydrophobicity_interface` is calibrated and has a real loader
+(`scripts/compute_surface_hydrophobicity.py`) but still abstains until someone
+runs it for their graph's nodes. `evolutionary_coupling_absence` similarly has
+a real, implemented pipeline (`scripts/compute_evolutionary_coupling.py`,
+Evolutionary Rate Covariation via RERconverge) but hasn't been calibrated
+against gold-standard PPI data yet — its threshold is still a placeholder.
+`string_low_confidence_non_interaction` uses STRING's `experimental` channel
+(`< 0.15`, graded — `scripts/compute_string_experimental.py`); STRING's
+`cooccurence` channel was also tested as an alternative evolutionary-coupling
+proxy and found no reliable separation on DRYAD/UPNA-PPI, so it isn't used.
+The same `experimental` channel's opposite tail (`> 0.9`, strong direct
+evidence) is deliberately
+*not* a rule here — it's a known-positive source instead
+(`rules/sources.yaml`'s `string_experimental_high_confidence`, built by
+`scripts/build_known_positive_sources.py`), since that's a plain "documented
+interaction" membership fact for `KnownPositiveVeto`, not a biological-
+plausibility judgement — see `rules/SOURCES.md` and `AUTHORING.md` Step 5.
+(A topology rule mirroring `TopologyFilter`'s `no_overlap` case,
+`no_shared_neighbors_low_expected_edge`, previously existed here and was
+removed: `TopologyFilter` already computes that exact signal more rigorously
+as an independent stream, so the YAML rule only double-counted it rather than
+adding new evidence — see `AUTHORING.md` Step 5.)
