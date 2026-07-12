@@ -136,15 +136,31 @@ def plot_funnel(stats: dict, out_path: str | Path) -> Path:
 
 
 def _random_nonedges(graph: TypedInteractionGraph, n: int, seed: int):
+    """Random non-interacting pairs for the 'random baseline' regime, **type-matched**
+    to the graph's admissible type-space. On a viral–host graph the positives (and our
+    emitted negatives) are all host–viral, so an untyped uniform sample — 91% human ⇒
+    mostly host–host — would be an unmatched population that spuriously spreads on axes
+    where the matched type lacks data (e.g. viral proteins have no compartment). Honoring
+    `admissible_types` keeps random on the same footing as the positives. On a single-type
+    graph (HuRI/DRYAD, all protein–protein) every pair is admissible, so behaviour is
+    unchanged."""
     rng = np.random.default_rng(seed)
     nodes = list(graph.g.nodes())
     N = len(nodes)
+    adm = getattr(graph, "admissible_types", None)
+    nt = getattr(graph, "node_type", {}) or {}
+
+    def _admissible(a: str, b: str) -> bool:
+        if adm is None:
+            return True
+        return frozenset((nt.get(a), nt.get(b))) in adm
+
     out, seen = [], set()
-    tries, cap = 0, n * 60 + 1000
+    tries, cap = 0, n * 120 + 1000
     while len(out) < n and tries < cap:
         tries += 1
         a, b = nodes[rng.integers(N)], nodes[rng.integers(N)]
-        if a == b or graph.g.has_edge(a, b):
+        if a == b or graph.g.has_edge(a, b) or not _admissible(a, b):
             continue
         k = frozenset((a, b))
         if k in seen:
