@@ -8,19 +8,35 @@
   applies_to: [protein, protein]
   when: "disjoint(a.compartments, b.compartments)"
   effect: safer_negative            # safer_negative | riskier_negative | veto
-  weight: 0.8
+  weight: 0.7                       # top of the "strong tendency, real exceptions" band (see AUTHORING.md Step 5)
   flag: different_compartment
   rationale: >
-    Two proteins that never share a subcellular compartment cannot physically
-    interact, so a non-edge between them is a safe negative.
-  source: "GO cellular_component"
+    Two proteins that never share a subcellular compartment are unlikely to
+    physically interact, so a non-edge between them is a safer negative.
+    Calibrated on DRYAD and UPNA-PPI (n=300/class;
+    scripts/calibrate_colocalization_threshold.py) using GO cellular_component
+    terms (scripts/fetch_go_localization.py). Jaccard(a.compartments,
+    b.compartments) separates the classes strongly on DRYAD (AUROC
+    0.906 optimistic / 0.875 protein-disjoint; the shipped disjoint-set rule
+    itself fires on 71% of true negatives while misfiring on only 3% of true
+    positives — 95% precision) but much more weakly on UPNA-PPI (AUROC 0.658 /
+    0.738; 40% of true positives wrongly flagged), likely because UPNA-PPI's
+    negatives are topology-hard (L3-based) rather than compartment-based, so a
+    negative there isn't guaranteed to also be a compartment mismatch. This
+    dataset-dependent split — a near-physical law on DRYAD, a real exception
+    on UPNA-PPI — is exactly the "strong tendency, real exceptions" character
+    that keeps this rule below hydrophobicity_interface's physicochemical
+    weight despite comparable-or-stronger raw AUROC on DRYAD alone.
+  source: >
+    GO cellular_component (scripts/fetch_go_localization.py); DRYAD
+    (doi:10.5061/dryad.15dv41p84); UPNA-PPI (github.com/alxndgb/UPNA-PPI).
 
 - id: hydrophobicity_interface
   modality: ppi
   applies_to: [protein, protein]
   when: "a.surface_hydrophobicity > 0.44 or b.surface_hydrophobicity > 0.44"
   effect: safer_negative
-  weight: 0.5                       # empirically calibrated; see rationale
+  weight: 0.8                       # empirically calibrated on ppi structures interface
   flag: hydrophobicity_interface_calibrated
   rationale: >
     Calibrated on DRYAD and UPNA-PPI (n=300/class;
@@ -49,12 +65,25 @@
 - id: string_low_confidence_non_interaction
   modality: ppi
   applies_to: [protein, protein]
-  when: "a.string_score_with_b < 0.15"
+  when: "a.string_experimental_score_with_b < 0.15"
   effect: safer_negative
   weight: 0.55                      # database-confidence-score guidance: 0.5-0.6
   rationale: >
-    STRING's physical-subnetwork confidence score aggregates evidence across
-    experiments, curation, co-expression, and text-mining; a pair scoring
-    below STRING's own reporting threshold has no supporting evidence in any
-    channel, making a non-edge a safer negative.
-  source: "STRING v12.0 (physical subnetwork), https://string-db.org/, combined_score < 0.15 (STRING's own lowest reporting cutoff)"
+    STRING's `experimental` channel is direct wet-lab assay evidence (e.g.
+    yeast two-hybrid, affinity capture) — the most direct channel STRING has,
+    as opposed to `combined_score`, which also blends in weaker, indirect
+    evidence (text-mining, coexpression) that shouldn't count for or against
+    a pair on its own. A pair scoring below STRING's own reporting threshold
+    on this specific channel has no direct experimental support, making a
+    non-edge a safer negative. The opposite tail of this same channel
+    (`experimental > 0.9`) is handled as a known-positive source
+    (`rules/sources.yaml`'s `string_experimental_high_confidence`,
+    `scripts/build_known_positive_sources.py`), not a rule here — that level
+    of direct evidence is a plain "this pair is documented as interacting"
+    fact for `KnownPositiveVeto`, not a biological-plausibility judgement the
+    rule engine's `when`/`effect`/`weight` shape is for. See `rules/SOURCES.md`
+    for why sources.yaml and the rule engine are different mechanisms.
+  source: >
+    STRING v12.0 (physical subnetwork), https://string-db.org/,
+    experimental channel < 0.15 (STRING's own lowest reporting cutoff).
+    scripts/compute_string_experimental.py.

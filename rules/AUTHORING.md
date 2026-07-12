@@ -107,7 +107,7 @@ where they live, and how they are intended to be computed or loaded.
 |------------------------------------|----------|-------------------------------------------------------------------------------------------------------------|
 | `compartments`                    | protein  | Set of GO cellular-component terms, loaded from TSV as in `localization.py` (one node → comma-separated compartments). |
 | `surface_hydrophobicity`          | protein  | Two-tier Kyte-Doolittle score (`scripts/compute_surface_hydrophobicity.py`): Tier 1 aggregates over solvent-exposed (DSSP RSA), ordered (AlphaFold pLDDT) residues when a confident structure exists; Tier 2 falls back to a whole-sequence mean otherwise. See `rules/ppi.yaml`'s `hydrophobicity_interface` for the calibrated (and direction-reversed) threshold. |
-| `string_score_with_b`             | protein  | Score on `a` for its STRING (v12.0, physical subnetwork) `combined_score` with `b`, normalized to `[0,1]` (raw score ÷ 1000). STRING's own reporting cutoff is 0.15 — it doesn't return pairs below that by default. |
+| `string_experimental_score_with_b` | protein (pairwise) | Score on `a` for its STRING (v12.0) `experimental` channel with `b` — direct wet-lab assay evidence, normalized to `[0,1]` (raw score ÷ 1000). Not `combined_score`: that blends in weaker indirect evidence (text-mining, coexpression). Genuinely pairwise (`build_pair_annotation_table()`). Backs `ppi.yaml`'s `string_low_confidence_non_interaction` (`< 0.15`, STRING's own reporting cutoff, safer_negative) via `scripts/compute_string_experimental.py`. The opposite tail (`> 0.9`) is a known-positive source instead, not a rule — see `rules/sources.yaml`'s `string_experimental_high_confidence` and `scripts/build_known_positive_sources.py`. |
 | `interface_conservation`          | protein  | Mean conservation over interface residues, derived from MSAs (Consurf/entropy) plus interface annotation (structure/docking/prediction). |
 | `degree`                          | protein  | Graph degree of the protein node in the PPI / heterogeneous network.                                       |
 | `neighbors`                       | protein  | Set of node IDs adjacent to this node in the graph currently loaded; pair with `disjoint`/`shared`/`jaccard` for common-neighbor reasoning (mirrors `TopologyFilter`'s `cn`). |
@@ -158,13 +158,30 @@ Additional fields you **plan** to use and how to compute them:
     predicted interface residues) to get an “interface conservation” score
     (mean conservation over interface positions).
 
-- `a.string_score_with_b`
-  - Download STRING's per-species physical-subnetwork links file (v12.0:
-    `https://stringdb-downloads.org/download/protein.physical.links.v12.0/9606.protein.physical.links.v12.0.txt.gz`
-    for human), resolve STRING's native `<taxid>.<Ensembl_protein_id>` keys to
-    UniProt via STRING's own alias file
-    (`.../protein.aliases.v12.0/9606.protein.aliases.v12.0.txt.gz`), and divide
-    `combined_score` by 1000 to normalize to `[0, 1]`.
+- `a.string_experimental_score_with_b`
+  - `scripts/string_channel.py` (shared plumbing) + `scripts/compute_string_experimental.py`:
+    resolve UniProt accessions to STRING's native `<taxid>.<Ensembl_protein_id>`
+    keys via STRING's own alias file
+    (`local-docs/string/9606.protein.aliases.v12.0.txt.gz`, `UniProt_AC` type),
+    then read the `experimental` column (not `combined_score`) from
+    `local-docs/string/9606.protein.links.detailed.v12.0.txt.gz` and divide by
+    1000 to normalize to `[0, 1]`. Deliberately the `experimental` channel,
+    not `combined_score`: a hard veto (see below) needs direct binding
+    evidence, not a blend that also includes text-mining/coexpression.
+  - The same channel's opposite tail (`> 0.9`) is deliberately *not* a rule
+    here — that level of direct evidence is a plain "this pair is documented
+    as interacting" fact, handled as a known-positive source instead
+    (`rules/sources.yaml`'s `string_experimental_high_confidence`,
+    `scripts/build_known_positive_sources.py`) so it outright removes the
+    pair via `KnownPositiveVeto`, same as BioGRID/IntAct. See
+    `rules/SOURCES.md` for why sources.yaml and the rule engine are
+    different mechanisms, and Step 5 below for the general principle.
+  - STRING's `cooccurence` channel (a different, evolutionary-coupling-style
+    signal — phylogenetic profiling, not direct evidence) was also tested
+    against DRYAD/UPNA-PPI and found no reliable separation (AUROC ~0.54-0.57,
+    CI barely excluding 0.5 even at full-dataset scale, driven mostly by
+    "known to STRING at all" rather than cooccurence specifically); its
+    one-off compute/calibration scripts were removed once that was settled.
 
 - Topology fields (if available), computed straight from the graph the pipeline
   is currently running against — mirrors `negaverse/streams/topology.py`:
@@ -310,7 +327,7 @@ when: "disjoint(a.compartments, b.compartments)"
 when: "ligand.volume > protein.pocket_volume * 1.5"
 when: "ligand.logp > 5 and protein.pocket_polarity > 0.5"
 when: "a.evolutionary_coupling_score_with_b < 0.1"
-when: "a.string_score_with_b < 0.15"
+when: "a.string_experimental_score_with_b < 0.15"
 when: "a.surface_hydrophobicity > 0.44 or b.surface_hydrophobicity > 0.44"
 when: "ligand.lineage_specificity == 'restricted_lineage' and disjoint(ligand.restricted_lineage_taxids, protein.lineage_taxids)"
 ```
@@ -337,8 +354,19 @@ A rule fires on exactly one direction; if you want both "disjoint → safer" *an
   - `safer_negative` — fires → confidence in the non-edge goes up.
   - `riskier_negative` — fires → confidence in the non-edge goes down
     (the pair looks more like a hidden positive).
-  - `veto` — fires → the pair is dropped entirely; use only for hard biophysical
-    or topological impossibilities.
+  - `veto` — fires → the pair is dropped entirely; use only for hard
+    biophysical or topological impossibilities. `RuleVetoFilter` picks up any
+    `effect: veto` rule automatically — same zero-code-change mechanism as
+    `RuleGradedFilter`, just a different stage — but think carefully before
+    reaching for it for *positive* evidence: a plain "this pair is documented
+    as interacting somewhere" fact (e.g. a database hit, or a very high
+    STRING `experimental` score) isn't a biological-plausibility judgement,
+    it's a membership fact, and belongs in `rules/sources.yaml`
+    (`KnownPositiveVeto`) instead — see `rules/SOURCES.md` for why that's a
+    different mechanism from this one. `ppi.yaml`'s
+    `string_low_confidence_non_interaction` and `sources.yaml`'s
+    `string_experimental_high_confidence` are the same STRING channel at
+    opposite tails, deliberately split across the two mechanisms this way.
 
 - `weight` ∈ `[0, 1]` sets how strong the push is. The graded score maps:
   - `safer_negative`:  `value = 0.5 + 0.5 · weight`  (weight 0.8 → 0.9).
@@ -350,9 +378,46 @@ to how famous the paper is.
 Typical ranges:
 | weight | use when                            | example                                        |
 |--------|--------------------------------------|------------------------------------------------|
-| 0.8–1.0| near-physical law; few exceptions   | disjoint compartments; non-permeable vs cytosolic |
-| 0.4–0.7| strong tendency, real exceptions    | hydrophobicity mismatch; pocket size mismatch; strong absence of co-evolution |
-| 0.1–0.3| weak prior / noisy signal           | coarse co-expression; mild topology/evolutionary mismatch |
+| 0.8–1.0| physicochemical complementarity at the interface itself; the strongest, most general category | hydrophobicity mismatch; pocket size/polarity mismatch |
+| 0.4–0.7| strong tendency, real (structural) exceptions | disjoint subcellular compartments |
+| 0.1–0.3| weak prior / noisy signal           | coarse co-expression; mild topology mismatch |
+
+**Why physicochemical constraints outrank compartment/localization ones, not the other way
+around.** An earlier version of this table put "disjoint compartments" in the top bucket as a
+"near-physical law" and hydrophobicity in the second tier — that ranking has it backwards.
+Physicochemical-complementarity rules (hydrophobicity, pocket fit) describe a property of the
+*interface itself* — the actual chemistry that drives or prevents binding — and the same kind of
+reasoning generalizes across modalities (`pli.yaml`'s `physicochemical_incompatibility` is the PLI
+analog of `ppi.yaml`'s `hydrophobicity_interface`). "Different compartment," by contrast, is a
+property of *where the molecules happen to have been observed*, which is a structurally weaker,
+narrower claim:
+- **It's PPI-only.** Ligands and metabolites diffuse and get transported across compartments
+  constantly, so "the ligand was annotated as extracellular" doesn't constrain whether it could
+  reach a cytosolic pocket the way a real permeability or size constraint does — that's exactly
+  why `pli.yaml` has no colocalization-style rule; it uses `permeability_class` instead.
+- **It's softer than it sounds even within PPI.** Many proteins genuinely shuttle between
+  compartments (transcription factors moving nucleus↔cytoplasm, stress-induced relocalization,
+  cell-cycle-dependent movement), and GO cellular-component annotations are an aggregated snapshot
+  across whatever studies happened to observe the protein — not a guarantee the two proteins never
+  co-occur anywhere. "Few exceptions" oversells that.
+
+The downstream ablation study (`docs/FILTER-EFFECTIVENESS.md` §3) found `hydrophobicity_interface`
+showed a consistent, repeated real contribution across both datasets and both models, while
+`colocalization_mismatch` showed ~0 net contribution — but that ablation ran while DRYAD's GO
+cellular-component coverage was still 0% (an ENSG/UniProt ID mismatch in
+`scripts/fetch_go_localization.py`, since fixed — it's natively UniProt-compatible, the loader just
+had a clobber-not-merge bug preventing DRYAD's accessions from ever being written). With coverage
+fixed (93% of DRYAD's UniProt accessions), a direct calibration
+(`scripts/calibrate_colocalization_threshold.py`, n=300/class) shows the signal is real and, on
+DRYAD specifically, comparable to or stronger than hydrophobicity's own calibrated numbers (AUROC
+0.906 optimistic / 0.875 protein-disjoint; the shipped rule fires on 71% of true negatives while
+misfiring on only 3% of true positives). It's markedly weaker on UPNA-PPI (AUROC 0.658 / 0.738;
+40% of true positives wrongly flagged) — exactly the dataset-dependent "real exceptions" character
+this band describes, since UPNA-PPI's negatives are topology-hard rather than compartment-based.
+`rules/ppi.yaml` reflects this: `hydrophobicity_interface` at `weight: 0.8`,
+`colocalization_mismatch` raised to `weight: 0.7` — the top of this band, evidenced by the strongest
+calibration numbers of any rule in this category, but still below the physicochemical band because
+the PPI-only/shuttling caveats above still hold regardless of any one dataset's numbers.
 
 Topology-specific guidance:
 - **Don't write a rule for "no shared neighbors + low configuration-model
@@ -540,11 +605,11 @@ physically interact."*
   applies_to: [protein, protein]
   when: "disjoint(a.compartments, b.compartments)"
   effect: safer_negative
-  weight: 0.8                       # near-physical: strong
+  weight: 0.7                       # top of the strong-tendency band, PPI-only, real exceptions (see Step 5)
   flag: different_compartment
   rationale: >
-    Two proteins that never share a subcellular compartment cannot physically
-    interact, so a non-edge between them is a safe negative.
+    Two proteins that never share a subcellular compartment are unlikely to
+    physically interact, so a non-edge between them is a safer negative.
   source: "GO cellular_component"
 ```
 

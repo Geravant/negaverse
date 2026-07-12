@@ -83,7 +83,7 @@ fields that exist (or will exist) in `build_annotation_table()`:
 
 - PPI fields: `a.compartments`, `b.compartments`,
   `a.surface_hydrophobicity`, `b.surface_hydrophobicity`,
-  `a.evolutionary_coupling_score_with_b`, `a.string_score_with_b`,
+  `a.evolutionary_coupling_score_with_b`, `a.string_experimental_score_with_b`,
   `a.interface_conservation`,
   `a.degree`, `b.degree`, `a.neighbors`, `b.neighbors`, `a.graph_two_m`.
 - PLI fields: `protein.pocket_volume`, `ligand.volume`,
@@ -102,7 +102,9 @@ exposure/disorder masking when a confident structure exists, sequence-mean
 fallback otherwise) for `surface_hydrophobicity`; Evolutionary Rate Covariation
 via RERconverge (`scripts/fetch_orthologs.py` -> `scripts/build_gene_alignments.py`
 -> `scripts/estimate_phangorn_trees.R` -> `scripts/rerconverge_runner.R` ->
-`scripts/compute_evolutionary_coupling.py`) for `evolutionary_coupling_score_with_b`
+`scripts/compute_evolutionary_coupling.py`) for `evolutionary_coupling_score_with_b`;
+`scripts/string_channel.py` + `scripts/compute_string_experimental.py` for
+`string_experimental_score_with_b`
 — **note this field is genuinely pairwise** (loaded via
 `build_pair_annotation_table()`, not the per-node `build_annotation_table()` —
 see `AUTHORING.md` Step 3); Consurf for `interface_conservation`;
@@ -135,7 +137,7 @@ when: "disjoint(a.compartments, b.compartments)"
 when: "ligand.volume > protein.pocket_volume * 1.5"
 when: "ligand.logp > 5 and protein.pocket_polarity > 0.5"
 when: "a.evolutionary_coupling_score_with_b < 0.1"
-when: "a.string_score_with_b < 0.15"
+when: "a.string_experimental_score_with_b < 0.15"
 when: "a.surface_hydrophobicity > 0.44 or b.surface_hydrophobicity > 0.44"
 when: "ligand.lineage_specificity == 'restricted_lineage' and disjoint(ligand.restricted_lineage_taxids, protein.lineage_taxids)"
 ```
@@ -156,11 +158,14 @@ Use AUTHORING.md’s calibration:
   - Reserve `veto` for hard impossibilities the user explicitly wants as hard drops.
 
 - Choose `weight` based on reliability of non-interaction:
-  - Strong, near-physical or very strong constraints (disjoint compartments,
-    non-permeable vs strictly intracellular, configuration-model impossible,
-    robust explicit non-binding) → `0.8–1.0`.
-  - Strong tendencies with known exceptions (pocket-volume mismatch, polarity
-    mismatch, strong absence of co-evolution) → `0.4–0.7`.
+  - Physicochemical complementarity at the interface itself — the strongest, most
+    general category, since it generalizes across modalities (hydrophobicity
+    mismatch, pocket-volume/polarity mismatch) → `0.8–1.0`.
+  - Strong tendencies with real, structural exceptions — includes disjoint
+    compartments (PPI-only: ligands/metabolites diffuse across compartments, and
+    even proteins shuttle between them, so this is softer than it first sounds —
+    see `AUTHORING.md` Step 5), configuration-model impossible, strong absence of
+    co-evolution → `0.4–0.7`.
   - Weak priors (coarse expression mismatch, mild topology/evolutionary mismatch) → `0.1–0.3`.
 
 Explain to the user how you chose `effect` and `weight` in terms of the source
@@ -171,7 +176,7 @@ Explain to the user how you chose `effect` and `weight` in terms of the source
 For every rule:
 
 - `id`: stable snake_case slug (e.g. `colocalization_mismatch`,
-  `ligand_pocket_size_mismatch`, `evolutionary_coupling_absence`).
+  `ligand_pocket_size_mismatch`, `string_low_confidence_non_interaction`).
 - `rationale`: 1–2 sentences explaining why the non-edge is safer or riskier;
   mention whether this is based on localization, physicochemical, evolutionary,
   or explicit non-binding evidence.

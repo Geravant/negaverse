@@ -3,16 +3,28 @@ benchmark graph — the #1 gap for validating "independent signals beat topology
 
 HuRI nodes are Ensembl gene ids (ENSG); our rules read `compartments` (GO
 cellular-component) and `surface_hydrophobicity`. This maps HuRI's ENSG nodes to
-UniProt via the human reviewed proteome, pulls GO CC + sequence, and MERGES:
+UniProt via the human reviewed proteome, pulls GO CC, and MERGES:
   * ENSG -> compartments   into local-docs/localization/go_cc.tsv
   * ENSG -> hydrophobicity into local-docs/annotations/hydrophobicity.tsv
+  * ENSG -> hydrophobicity tier into local-docs/annotations/hydrophobicity_tier.tsv
 so build_annotation_table() picks them up automatically (co-localization is then an
 independent, non-topology signal on HuRI).
 
+Hydrophobicity is computed via scripts/compute_surface_hydrophobicity.py's real
+two-tier method (DSSP solvent-exposure + AlphaFold pLDDT disorder-masking when a
+confident structure exists, sequence-mean fallback otherwise) — the exact method
+`hydrophobicity_interface`'s 0.44 threshold was calibrated against
+(scripts/calibrate_hydrophobicity_threshold.py). An earlier version of this script
+computed its own separate, simplified whole-sequence Kyte-Doolittle score inline,
+which doesn't match what the threshold means; fixed to call the real `compute()`
+instead of duplicating a weaker proxy.
+
     PYTHONPATH=. python scripts/build_huri_annotations.py
 
-Network required (UniProt REST, paginated). ENSG keys never collide with the
-UniProt keys already in those files, so SARS annotations are preserved.
+Network required (UniProt REST, paginated, plus AlphaFold structure fetch + DSSP
+for the Tier 1 upgrade — see compute_surface_hydrophobicity.py). ENSG keys never
+collide with the UniProt keys already in those files, so SARS annotations are
+preserved.
 """
 from __future__ import annotations
 
@@ -24,6 +36,8 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from scripts.compute_surface_hydrophobicity import compute as compute_hydrophobicity
+
 try:
     import certifi
     _SSL = ssl.create_default_context(cafile=certifi.where())
@@ -32,12 +46,8 @@ except Exception:
 
 LOC = Path("local-docs/localization/go_cc.tsv")
 HYD = Path("local-docs/annotations/hydrophobicity.tsv")
+HYD_TIER = Path("local-docs/annotations/hydrophobicity_tier.tsv")
 SEARCH = "https://rest.uniprot.org/uniprotkb/search"
-ACC = "https://rest.uniprot.org/uniprotkb/accessions"
-
-_KD = {"A": 1.8, "R": -4.5, "N": -3.5, "D": -3.5, "C": 2.5, "Q": -3.5, "E": -3.5,
-       "G": -0.4, "H": -3.2, "I": 4.5, "L": 3.8, "K": -3.9, "M": 1.9, "F": 2.8,
-       "P": -1.6, "S": -0.8, "T": -0.7, "W": -0.9, "Y": -1.3, "V": 4.2}
 
 
 def _get(url):
@@ -70,22 +80,6 @@ def _iter_proteome():
         page += 1
         if page % 10 == 0:
             print(f"  proteome page {page} ...")
-
-
-def _score(seq):
-    vals = [_KD[a] for a in seq if a in _KD]
-    if not vals:
-        return None
-    return round(max(0.0, min(1.0, (sum(vals) / len(vals) + 4.5) / 9.0)), 4)
-
-
-def _fetch_seqs(accs):
-    q = urllib.parse.urlencode({"accessions": ",".join(accs),
-                                "fields": "accession,sequence", "format": "json"})
-    with urllib.request.urlopen(urllib.request.Request(f"{ACC}?{q}"), timeout=30, context=_SSL) as fh:
-        data = json.load(fh)
-    return {e["primaryAccession"]: e.get("sequence", {}).get("value")
-            for e in data.get("results", []) if e.get("sequence")}
 
 
 def _merge(path: Path, new: dict, joiner):
@@ -130,28 +124,25 @@ def main():
     print(f"  mapped {len(ensg_uni):,} HuRI genes to UniProt; "
           f"{len(ensg_comp):,} have GO compartments")
 
-    # hydrophobicity for the mapped UniProts
-    print("Fetching sequences + scoring hydrophobicity ...")
+    # hydrophobicity for the mapped UniProts — real two-tier method (DSSP +
+    # AlphaFold structure when available, sequence fallback otherwise), the
+    # same one hydrophobicity_interface's threshold was calibrated against.
+    print("Scoring hydrophobicity (two-tier: structure when available, sequence fallback) ...")
     uni_list = sorted(set(ensg_uni.values()))
-    seqs: dict[str, str] = {}
-    for i in range(0, len(uni_list), 100):
-        for attempt in range(3):
-            try:
-                seqs.update(_fetch_seqs(uni_list[i:i + 100]))
-                break
-            except Exception as ex:
-                print(f"  seq chunk {i//100}: retry {attempt+1} ({ex})")
-                time.sleep(2 * (attempt + 1))
+    scores, tiers = compute_hydrophobicity(uni_list)
     ensg_hyd = {}
+    ensg_tier = {}
     for g, acc in ensg_uni.items():
-        s = seqs.get(acc)
-        if s and (sc := _score(s)) is not None:
-            ensg_hyd[g] = sc
+        if acc in scores:
+            ensg_hyd[g] = scores[acc]
+            ensg_tier[g] = tiers[acc]
 
     n1, t1 = _merge(LOC, ensg_comp, lambda s: ",".join(sorted(s)))
     n2, t2 = _merge(HYD, ensg_hyd, lambda v: str(v))
+    n3, t3 = _merge(HYD_TIER, ensg_tier, lambda v: v)
     print(f"\nmerged {n1} HuRI compartment rows into {LOC} (total {t1})")
     print(f"merged {n2} HuRI hydrophobicity rows into {HYD} (total {t2})")
+    print(f"merged {n3} HuRI hydrophobicity-tier rows into {HYD_TIER} (total {t3})")
 
 
 if __name__ == "__main__":
