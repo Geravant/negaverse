@@ -69,7 +69,7 @@ def test_colocalization_runs_from_yaml():
     f = RuleGradedFilter(annotations=ann)
     f.fit(g)                                    # loads rules/ppi.yaml
     s = f.score(g, "a", "b")
-    assert s.value == 0.85                       # safer_negative weight 0.7 -> 0.85
+    assert s.value == 0.9                        # safer_negative weight 0.8 -> 0.9
     assert "different_compartment" in s.flags
     assert s.evidence["fired"][0]["id"] == "colocalization_mismatch"
 
