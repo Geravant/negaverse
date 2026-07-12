@@ -7,6 +7,8 @@ They are *prototypes*: pure functions with an evaluation harness
 is non-breaking (entropy-weighted fusion). See docs/IG-FEATURES.md.
 
   entropy_fusion — Ch4: trust each stream in proportion to how decisive it is.
+  logodds_fusion — fuse evidence in log-odds coordinates (reinforce, not dilute);
+                   plus a calibrated, decorrelating stack with a lower bound.
   dpp            — Ch5: pick a negative set that *spans* the space, not clones.
   surprisal      — Ch1: score a pair by resemblance to a frozen background cloud
                    (gold negatives = safe; positive manifold = suspected FN).
@@ -21,6 +23,13 @@ from .entropy_fusion import (
     entropy_weighted_fuse,
     stream_disagreement,
 )
+from .logodds_fusion import (
+    LogOddsStack,
+    logit,
+    logodds_fuse,
+    logodds_pool,
+    sigmoid,
+)
 from .dpp import greedy_map_dpp
 from .surprisal import background_similarity, normalize_rows, topk_mean_sim
 from .margin import margin_gate, margin_score
@@ -30,6 +39,11 @@ __all__ = [
     "decisiveness",
     "entropy_weighted_fuse",
     "stream_disagreement",
+    "LogOddsStack",
+    "logit",
+    "logodds_fuse",
+    "logodds_pool",
+    "sigmoid",
     "greedy_map_dpp",
     "background_similarity",
     "normalize_rows",

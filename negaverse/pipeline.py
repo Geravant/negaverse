@@ -20,6 +20,7 @@ from .candidates import generate_candidates
 from .fusion import fuse
 from .graph import TypedInteractionGraph
 from .ig.entropy_fusion import binary_entropy, entropy_weighted_fuse
+from .ig.logodds_fusion import logodds_fuse, logodds_pool, sigmoid
 from .matching import Scored, degree_matched_eval, hard_train, select_train
 from .schema import NegativeRecord, StreamScore
 from .streams import Filter, Stage, build_filters
@@ -64,7 +65,12 @@ class PipelineConfig:
     gated_max: int | None = None
     sources_version: str = "sars-cov2-network/v1+negatome2"
     # fusion strategy: "mean" = fixed-weight mean (default, unchanged);
-    # "entropy" = weight each stream by how decisive it is (IG Ch4, ig/).
+    # "entropy" = weight each stream by how decisive it is (IG Ch4, ig/);
+    # "logodds" = accumulate evidence in log-odds coordinates so agreement
+    #   REINFORCES instead of diluting (ig/logodds_fusion). NB: the unsupervised
+    #   pool is the right coordinate but not a calibrated scale — for a calibrated
+    #   confidence + lower bound, fit LogOddsStack on gold labels (see
+    #   scripts/eval_logodds.py); the pool alone can be worse-calibrated than the mean.
     fusion_mode: str = "mean"
     fusion_lam: float = 1.0              # entropy sharpness; 0 == "mean"
     # route pairs where two independent signals disagree by at least this margin to
@@ -107,6 +113,13 @@ def _fuse_confidence(sub_scores: dict[str, float | None],
             wt = base
         num += wt * val
         den += wt
+    if mode == "logodds":
+        # accumulate in log-odds coordinates: agreement reinforces, abstention is
+        # neutral, contradiction cancels. σ(Σ w·logit(v)); prior 0.5.
+        contributing = {n: v for n, v in sub_scores.items() if v is not None}
+        if not contributing:
+            return 0.5
+        return round(sigmoid(logodds_pool(contributing, w)), 4)
     return round(num / den, 4) if den > 0 else 0.5
 
 
@@ -146,8 +159,12 @@ def run_pipeline(
     graded_flags: dict[tuple[str, str], list[str]] = {}
     for (u, v) in survivors:
         scores = [f.score(graph, u, v) for f in graded_f]
-        fused = (entropy_weighted_fuse(scores, cfg.weights, cfg.fusion_lam)
-                 if cfg.fusion_mode == "entropy" else fuse(scores, cfg.weights))
+        if cfg.fusion_mode == "entropy":
+            fused = entropy_weighted_fuse(scores, cfg.weights, cfg.fusion_lam)
+        elif cfg.fusion_mode == "logodds":
+            fused = logodds_fuse(scores, cfg.weights)
+        else:
+            fused = fuse(scores, cfg.weights)
         if fused.vetoed:              # a graded filter may still hard-veto
             n_vetoed += 1
             continue

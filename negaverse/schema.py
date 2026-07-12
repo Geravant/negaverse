@@ -43,6 +43,11 @@ class NegativeRecord:
     streams: dict[str, Optional[float]]   # per-stream sub-scores: structured / literature / topology
     provenance: dict[str, Any]            # filters fired, evidence, source graph, versions
     flags: list[str] = field(default_factory=list)
+    # calibrated lower-confidence bound σ(L − z·sd) from LogOddsStack — the floor
+    # that should *authorise* a label. None unless a calibrator was fit on gold
+    # labels (ig/logodds_fusion, scripts/eval_logodds.py). Separates uncertainty
+    # from the point estimate, the axis the schema previously conflated.
+    confidence_lcb: Optional[float] = None
 
     def as_row(self) -> dict[str, Any]:
         d = asdict(self)

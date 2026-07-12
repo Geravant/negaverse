@@ -27,6 +27,7 @@ set. Several features below therefore become two gates, one per product.
 | Lecture chapter | negaverse gate it becomes | Prototype | Verdict from evaluation |
 |---|---|---|---|
 | Ch4 Entropy-weighted fusion | Per-candidate stream weights: trust the decisive stream | `ig/entropy_fusion.py`, wired into `pipeline.py` (`fusion_mode="entropy"`) | **Strong — but only with stream-reported confidence.** Scalar proxy backfires. |
+| Log-odds fusion + calibrated stack | Fuse evidence in log-odds coordinates (agreement reinforces); a supervised stack gives a *calibrated* confidence + lower bound | `ig/logodds_fusion.py`, `fusion_mode="logodds"` (opt-in), `scripts/eval_logodds.py` | **Stack is a decisive calibration win** (Brier 0.67→0.05, ECE 0.78→0.02, AUROC 0.86→0.87). **Unsupervised pool alone is worse-calibrated than the mean** — supervision is mandatory. LCB correct but negligible at current data density. |
 | Ch5 Determinantal (DPP) selection | Diverse eval/train set curation | `ig/dpp.py` | **Modest on real embeddings; removes the worst near-duplicates.** |
 | Ch1 Surprisal vs a frozen cloud | Resemblance to the positive manifold — over graph *and* sequence (ESM2) feature spaces | `ig/surprisal.py`, `scripts/eval_esm2_manifold.py` | **Gold-cloud = null (0.47). Graph manifold real (0.88). ESM2 sequence manifold is the *independent* axis (corr ~0.2) → 3-way fusion 0.81→0.88.** |
 | Ch7 Geometric routing (relative margin) | Margin between positive-like and negative-like clouds, not an absolute cutoff | `ig/margin.py` | Component of C's relative-margin score (0.95). |
@@ -300,3 +301,61 @@ or `local-docs/mappings` are absent (see the README for how to fetch them).
    where the manifold's unique signal lives. Verified end-to-end on HuRI (the
    flagged pairs are topology-says-safe / manifold-says-risky). See
    `pipeline._disagreement_keys`, `tests/test_routing.py`.
+
+---
+
+## Log-odds fusion + a calibrated stack (the fusion coordinate)
+
+**Problem.** The shipped `fusion.fuse` is a weighted arithmetic *mean* of the
+streams' `[0,1]` sub-scores. Its own docstring names the defect: a mean
+*dilutes* agreement (two "safe" streams at 0.75 and 1.0 fuse to 0.875 — below the
+stronger one) and the output is not a probability. Worse, it is a **mean of a
+mean**: `RuleGradedFilter` already averages the fired per-rule votes, then that
+one value is averaged again with structured/topology — so correlated rules are
+double-diluted.
+
+**Fix.** Fuse in the Bernoulli family's natural coordinate. Read each stream's
+value `v_j` as its own `P(N | s_j)` and pool independent evidence in log-odds:
+
+```
+L(x) = logit(π0) + Σ_j w_j (logit(v_j) − logit(π0)),   P_N(x) = σ(L(x))
+```
+
+Agreement *adds* (reinforces, never dilutes), contradiction cancels, an
+abstaining stream contributes exactly 0, a veto is still a hard drop.
+`logodds_fuse` is a drop-in for `fuse` (`fusion_mode="logodds"`), unit-tested in
+`tests/test_logodds.py`. But fixed weights + `π0` give the right *coordinate*, not
+a calibrated *scale*, and still double-count correlated streams. The fix for both
+is `LogOddsStack`: an L2-regularised logistic regression over the per-stream **and
+per-rule** logits (so it decorrelates the redundant rules), cross-fittable, whose
+coefficient covariance yields a lower-confidence bound `σ(L − z·sd)` — the
+calibrated floor that should *authorise* a label (the LCB the schema lacked;
+`schema.NegativeRecord.confidence_lcb`).
+
+**Evaluation** (`scripts/eval_logodds.py`, HuRI, 8k positives × 3 seeds, ~1275
+labeled gold-N / held-out-edge pairs per seed; label 1 = non-interaction):
+
+| method | Brier ↓ | ECE ↓ | AUROC ↑ |
+|---|---|---|---|
+| mean (shipped) | 0.666 | 0.776 | 0.858 |
+| log-odds pool (unsupervised) | 0.872 | 0.893 | 0.704 |
+| **calibrated stack (cross-fit)** | **0.050** | **0.017** | **0.872** |
+
+**Verdict.**
+1. **The stack is a decisive calibration win** — a 13× lower Brier and 45× lower
+   ECE than the mean, at *no* discrimination cost (AUROC even nudges up). It turns
+   the ranking-only `confidence` into an actual probability.
+2. **The unsupervised pool alone is a negative result** — right coordinate, wrong
+   scale: it *over-commits* (Brier 0.87, worse than the mean). Supervision /
+   decorrelation is **mandatory**, not the optional afterthought the original
+   sketch implied. Hence `fusion_mode="logodds"` ships opt-in and is **not** the
+   default; the recommended path is a calibration stage that fits `LogOddsStack`
+   on gold labels and writes `confidence` + `confidence_lcb`.
+3. **The LCB is correct but negligible at this data density** — 21.6% vs 21.9% of
+   real edges admitted at matched negative-retention; with 1275 points and 5
+   features the coefficient uncertainty is tiny, so the floor ≈ the point
+   estimate. It is insurance for sparse/extrapolation regions, not a win here.
+4. **The fusion coordinate is not the lever for hidden-positive avoidance** — the
+   injection-selection rate is ~9–12% across mean / pool / stack alike. That is
+   the job of the selection geometry (DPP / Fisher / Sinkhorn / PSM), evaluated
+   separately.
