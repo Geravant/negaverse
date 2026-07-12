@@ -79,7 +79,7 @@ class _RuleFilterBase(Filter):
         """Yield (rule, rec_first, rec_second) for rules whose applies_to matches
         this pair's node types, binding entities in the declared order.
 
-        Pairwise fields (e.g. `evolutionary_coupling_score_with_b`) depend on
+        Pairwise fields (e.g. `string_score_with_b`) depend on
         which specific partner is being scored, so they can't live in the
         per-node `self._ann` cache — they're merged onto a *copy* of u's record
         fresh on every call, keyed to this exact (u, v) pair. Copying (not

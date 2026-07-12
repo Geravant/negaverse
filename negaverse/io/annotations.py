@@ -19,13 +19,13 @@ Graph-derived fields (neighbors / degree / graph_two_m) are NOT loaded here — 
 rule filters add them from the live graph at fit time (see streams/rules.py), so
 topology rules work without a data file.
 
-Pairwise fields (e.g. `evolutionary_coupling_score_with_b`, `string_experimental_score_with_b`)
-are a third kind, loaded separately via `build_pair_annotation_table()` below —
-their value depends on *both* entities in a pair, not one node alone, so they
-can't live in the `dict[node -> {field: value}]` shape above. See that
-function's docstring for the file format; `streams/rules.py::_RuleFilterBase`
-merges the right pair's values onto the `a`-side record at score() time, fresh
-per (u, v) call.
+Pairwise fields (e.g. `string_experimental_score_with_b`) are a third kind,
+loaded separately via `build_pair_annotation_table()` below — their value
+depends on *both* entities in a pair, not one node alone, so they can't live in
+the `dict[node -> {field: value}]` shape above. See that function's docstring
+for the file format; `streams/rules.py::_RuleFilterBase` merges the right
+pair's values onto the `a`-side record at score() time, fresh per (u, v)
+call.
 """
 from __future__ import annotations
 
@@ -44,7 +44,6 @@ _SCALAR_FIELDS = {
 # field name -> default TSV path (node_a<TAB>node_b<TAB>float, order-independent).
 # Extend as pairwise sources are added; see build_pair_annotation_table().
 _PAIR_FIELDS = {
-    "evolutionary_coupling_score_with_b": f"{ANNOT_DIR}/evolutionary_coupling.tsv",
     "string_experimental_score_with_b": f"{ANNOT_DIR}/string_experimental.tsv",
 }
 
@@ -67,9 +66,9 @@ def _load_scalar_tsv(path: str | Path) -> dict[str, float]:
 
 
 def _load_pair_tsv(path: str | Path) -> dict[frozenset[str], float]:
-    """node_a<TAB>node_b<TAB>value. Order-independent: pair properties like
-    evolutionary coupling or a STRING score are symmetric, so the key is a
-    frozenset of the two node IDs, not an ordered tuple."""
+    """node_a<TAB>node_b<TAB>value. Order-independent: pair properties like a
+    STRING score are symmetric, so the key is a frozenset of the two node
+    IDs, not an ordered tuple."""
     out: dict[frozenset[str], float] = {}
     with open(path, encoding="utf-8") as fh:
         for line in fh:
