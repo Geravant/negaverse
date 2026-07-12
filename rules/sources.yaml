@@ -134,6 +134,21 @@
     scripts/build_known_positive_sources.py — 24,266 unique UniProt pairs as
     of the v12.0 human links file."
 
+- name: string_experimental_high_confidence_ensembl
+  modality: ppi
+  enabled: true
+  path: local-docs/string/string_experimental_high_confidence_pairs_ensembl.tsv
+  id_space: ensembl
+  description: >
+    string_experimental_high_confidence mapped to Ensembl gene ids (engages
+    the HuRI benchmark) — same UniProt->ENSG mapping pattern as
+    biogrid_human_ensembl/intact_human_ensembl above.
+  source: "STRING v12.0 (physical subnetwork), experimental channel > 0.9
+    (raw > 900), mapped via UniProt->ENSG
+    (local-docs/mappings/uniprot_ensg_human.tsv). Built by
+    scripts/build_known_positive_sources.py — 268 pairs within HuRI's node
+    set as of the v12.0 human links file."
+
 # --- pli: protein-ligand gold-standard databases -----------------------------
 
 - name: biolip2
