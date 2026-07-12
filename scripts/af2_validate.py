@@ -75,12 +75,55 @@ def _load_huintaf2(name, uniprot, u2e):
     return out
 
 
+def _load_huri_rich(u2e):
+    """HuRI pairs (ENSG) with the extra huintaf2 columns needed to explain the
+    model↔pDockQ gap: interface plDDT, disorder (residues with plDDT<70), lengths."""
+    out = []
+    for r in csv.DictReader(open(f"{HUINTAF2}/HuRI.csv")):
+        a, b = r["Name"].split("-") if r["Name"].count("-") == 1 else (None, None)
+        if not a:
+            continue
+        try:
+            pd = float(r["pDockQ"]); l1 = float(r["len1"]); l2 = float(r["len2"])
+            # disordered/flexible residues = plDDT < 70 (the −50 and −50-70 bins)
+            dis1 = (float(r["NumDiso1-50"]) + float(r["NumDiso1-50-70"])) / max(l1, 1)
+            dis2 = (float(r["NumDiso2-50"]) + float(r["NumDiso2-50-70"])) / max(l2, 1)
+            out.append({"a": a, "b": b, "pdockq": pd, "if_plddt": float(r["IF_plDDT"]),
+                        "disorder": 0.5 * (dis1 + dis2), "len_sum": l1 + l2})
+        except (ValueError, KeyError):
+            continue
+    return out
+
+
 def _feat(u, v, emb):
     a, b = emb.get(u), emb.get(v)
     if a is None or b is None:
         return None
     a, b = np.asarray(a, float), np.asarray(b, float)
     return np.concatenate([np.minimum(a, b), np.maximum(a, b)])
+
+
+def _train_disjoint(seed):
+    """The protein-disjoint model used by crosscheck/investigate: side-A only."""
+    import hashlib, json
+    emb = load_embeddings_npz(HURI_EMB)
+    g = load_huri_graph()
+    side = lambda p: int(hashlib.sha1(f"{seed}:{p}".encode()).hexdigest(), 16) & 1
+    comp = [json.loads(l) for l in open(COMPOSED)]
+    verified = [(r["u"], r["v"]) for r in comp if "suspected_false_negative" not in r["flags"]]
+    pos = [tuple(e) for e in g.g.edges()]
+
+    def mat(pairs):
+        X = [_feat(u, v, emb) for u, v in pairs]
+        return np.asarray([x for x in X if x is not None])
+    Xp = mat([(u, v) for u, v in pos if side(u) == 0 and side(v) == 0])
+    Xn = mat([(u, v) for u, v in verified if side(u) == 0 and side(v) == 0])
+    rng = np.random.default_rng(seed)
+    n = min(len(Xp), len(Xn))
+    Xp = Xp[rng.choice(len(Xp), n, replace=False)]; Xn = Xn[rng.choice(len(Xn), n, replace=False)]
+    clf = RandomForestClassifier(300, random_state=seed, n_jobs=-1).fit(
+        np.vstack([Xp, Xn]), np.r_[np.ones(n), np.zeros(n)])
+    return clf, emb, g, side, n
 
 
 # --- reference: real AF2 pDockQ separation ------------------------------
@@ -209,9 +252,80 @@ def foldbatch(space, top_k, seed=0):
           "length-matched control and approach the real-interaction range.")
 
 
+def investigate(seed=0, n_eval=6000):
+    """WHY does model confidence disagree with AF2 pDockQ? Score unseen (side-B)
+    real HuRI interactions with the protein-disjoint model, then see what the two
+    disagree on — is it hubness (degree), disorder, or length driving it?"""
+    clf, emb, g, side, ntr = _train_disjoint(seed)
+    deg = dict(g.g.degree())
+    rich = _load_huri_rich(_u2e())
+    rng = np.random.default_rng(seed); rng.shuffle(rich)
+    rows = []
+    for r in rich:
+        a, b = r["a"], r["b"]
+        if side(a) != 1 or side(b) != 1:            # unseen proteins only
+            continue
+        f = _feat(a, b, emb)
+        if f is None:
+            continue
+        r = {**r, "P": float(clf.predict_proba([f])[0, 1]), "deg_sum": deg.get(a, 0) + deg.get(b, 0)}
+        rows.append(r)
+        if len(rows) >= n_eval:
+            break
+    P = np.array([x["P"] for x in rows]); pdq = np.array([x["pdockq"] for x in rows])
+    dg = np.array([x["deg_sum"] for x in rows]); dis = np.array([x["disorder"] for x in rows])
+    ln = np.array([x["len_sum"] for x in rows]); ifp = np.array([x["if_plddt"] for x in rows])
+    print(f"  {len(rows)} unseen (protein-disjoint) real HuRI interactions, trained on {ntr}+/{ntr}-")
+    print(f"\n  baseline  Spearman(model P, pDockQ) = {spearmanr(P, pdq)[0]:+.3f}\n")
+    print(f"  {'variable':<20}{'vs model P':>12}{'vs pDockQ':>12}")
+    for name, v in [("degree (hubness)", dg), ("disorder fraction", dis),
+                    ("length (sum)", ln), ("interface plDDT", ifp)]:
+        print(f"  {name:<20}{spearmanr(v, P)[0]:>+12.3f}{spearmanr(v, pdq)[0]:>+12.3f}")
+
+    def partial(control):                            # rank-residualise both on control, re-correlate
+        r = np.argsort(np.argsort(control)).astype(float)
+        def resid(y):
+            yr = np.argsort(np.argsort(y)).astype(float)
+            m, c = np.polyfit(r, yr, 1); return yr - (m * r + c)
+        return spearmanr(resid(P), resid(pdq))[0]
+    print(f"\n  partial Spearman(P,pDockQ) controlling for degree:   {partial(dg):+.3f}")
+    print(f"  partial Spearman(P,pDockQ) controlling for disorder: {partial(dis):+.3f}")
+    print("  (if the anti-correlation vanishes when controlled, that variable IS the cause)")
+
+    q = np.quantile(dg, [.25, .5, .75]); edges = [-1] + list(q) + [dg.max() + 1]
+    print("\n  within degree quartiles, Spearman(P,pDockQ):")
+    for i in range(4):
+        m = (dg > edges[i]) & (dg <= edges[i + 1])
+        if m.sum() > 20:
+            print(f"    Q{i+1} (deg {int(edges[i]+1)}–{int(edges[i+1])}, n={int(m.sum())}): "
+                  f"{spearmanr(P[m], pdq[m])[0]:+.3f}")
+
+    syms = {l.split('\t')[0]: l.split('\t')[1].strip()
+            for l in open('local-docs/mappings/ensg_symbol.tsv') if '\t' in l}
+    nm = lambda e: syms.get(e, e)
+    idx = np.argsort(-P)
+    print("\n  the disagreement, case by case — model LOVES, AF2 says no interface (P high, pDockQ<0.15):")
+    shown = 0
+    for i in idx:
+        if pdq[i] < 0.15 and shown < 6:
+            r = rows[i]
+            print(f"    {nm(r['a'])}×{nm(r['b']):<14} P={P[i]:.2f} pDockQ={pdq[i]:.2f} "
+                  f"deg={int(dg[i]):<4} disorder={dis[i]:.2f} IF_plDDT={ifp[i]:.0f}")
+            shown += 1
+    print("  model DOUBTS, AF2 says strong interface (P low, pDockQ>0.5):")
+    shown = 0
+    for i in idx[::-1]:
+        if pdq[i] > 0.5 and shown < 6:
+            r = rows[i]
+            print(f"    {nm(r['a'])}×{nm(r['b']):<14} P={P[i]:.2f} pDockQ={pdq[i]:.2f} "
+                  f"deg={int(dg[i]):<4} disorder={dis[i]:.2f} IF_plDDT={ifp[i]:.0f}")
+            shown += 1
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--stage", choices=["reference", "crosscheck", "foldbatch"], required=True)
+    ap.add_argument("--stage", choices=["reference", "crosscheck", "investigate", "foldbatch"],
+                    required=True)
     ap.add_argument("--space", choices=["idg", "sars_host"], default="idg")
     ap.add_argument("--top-k", type=int, default=20)
     args = ap.parse_args()
@@ -219,6 +333,8 @@ def main():
         reference()
     elif args.stage == "crosscheck":
         crosscheck()
+    elif args.stage == "investigate":
+        investigate()
     else:
         foldbatch(args.space, args.top_k)
 
