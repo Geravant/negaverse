@@ -322,9 +322,88 @@ def investigate(seed=0, n_eval=6000):
             shown += 1
 
 
+# TOP-IDP per-residue disorder propensity (Campen et al. 2008) — a SEQUENCE-ONLY
+# disorder score (higher = more disorder-promoting). Used as a deployable pre-AF2
+# filter: no structure, no AF2, computable from sequence alone.
+_TOP_IDP = {"A": 0.06, "R": 0.180, "N": 0.007, "D": 0.192, "C": 0.02, "Q": 0.318,
+            "E": 0.736, "G": 0.166, "H": 0.303, "I": -0.486, "L": -0.326, "K": 0.586,
+            "M": -0.397, "F": -0.697, "P": 0.987, "S": 0.341, "T": 0.059, "W": -0.884,
+            "Y": -0.510, "V": -0.121}
+
+
+def _seq_disorder(seq):
+    v = [_TOP_IDP.get(c, 0.0) for c in seq]
+    return sum(v) / len(v) if v else 0.0
+
+
+def filtertest(seed=0, n_eval=6000):
+    """(1) Quantify what the model's false positives actually ARE, and (2) measure
+    whether a SEQUENCE-ONLY disorder filter (TOP-IDP, non-circular) improves the
+    model's structural precision. Eval = unseen real HuRI interactions with real pDockQ."""
+    clf, emb, g, side, ntr = _train_disjoint(seed)
+    deg = dict(g.g.degree())
+    seqs = {l.split("\t")[0]: l.split("\t")[1].strip()
+            for l in open("local-docs/huri/sequences_ensg.tsv") if "\t" in l}
+    syms = {l.split("\t")[0]: l.split("\t")[1].strip()
+            for l in open("local-docs/mappings/ensg_symbol.tsv") if "\t" in l}
+    sdis = {k: _seq_disorder(s) for k, s in seqs.items()}
+    rich = _load_huri_rich(_u2e())
+    rng = np.random.default_rng(seed); rng.shuffle(rich)
+    rows = []
+    for r in rich:
+        a, b = r["a"], r["b"]
+        if side(a) != 1 or side(b) != 1 or a not in sdis or b not in sdis:
+            continue
+        f = _feat(a, b, emb)
+        if f is None:
+            continue
+        rows.append({**r, "P": float(clf.predict_proba([f])[0, 1]),
+                     "deg": deg.get(a, 0) + deg.get(b, 0),
+                     "seqdis": max(sdis[a], sdis[b]),          # the more-disordered partner
+                     "sa": syms.get(a, a), "sb": syms.get(b, b)})
+        if len(rows) >= n_eval:
+            break
+    P = np.array([x["P"] for x in rows]); pdq = np.array([x["pdockq"] for x in rows])
+    af2dis = np.array([x["disorder"] for x in rows]); sq = np.array([x["seqdis"] for x in rows])
+    deg = np.array([x["deg"] for x in rows])
+    KRT = lambda x: x["sa"].startswith(("KRTAP", "LCE")) or x["sb"].startswith(("KRTAP", "LCE"))
+
+    # sanity: does the sequence-only score track AF2's structural disorder?
+    print(f"  sequence disorder (TOP-IDP) vs AF2 disorder: Spearman = {spearmanr(sq, af2dis)[0]:+.3f} "
+          f"(a usable proxy)\n")
+
+    # (1) what ARE the false positives?  model-confident (top 20% P) but no interface (pDockQ<0.23)
+    hi = P >= np.quantile(P, 0.80)
+    fp = hi & (pdq < 0.23)
+    nfp = int(fp.sum())
+    print(f"  model 'false positives' = top-20% P AND pDockQ<0.23:  n={nfp} of {int(hi.sum())} top-P pairs")
+    krt_mask = np.array([KRT(r) for r in rows])
+    print(f"    LCE/KRTAP family:           {np.mean(krt_mask[fp])*100:5.1f}%")
+    print(f"    high seq-disorder (top tertile): {np.mean(sq[fp] > np.quantile(sq,0.67))*100:5.1f}%")
+    print(f"    high AF2-disorder (>0.5):   {np.mean(af2dis[fp] > 0.5)*100:5.1f}%")
+    print(f"    hub (degree top tertile):   {np.mean(deg[fp] > np.quantile(deg,0.67))*100:5.1f}%")
+    print(f"  (so 'most' means: how much of {nfp} the sequence-disorder filter would catch)\n")
+
+    # (2) would a SEQUENCE-disorder filter improve structural precision?
+    thr = np.quantile(sq, 0.75)                       # drop the 25% most-disordered pairs
+    keep = sq <= thr
+    def prec_at_k(mask, k=100):
+        sub = np.where(mask)[0]
+        top = sub[np.argsort(-P[sub])[:k]]
+        return np.mean(pdq[top] > 0.23)
+    print(f"  SEQUENCE-disorder filter (drop pairs with TOP-IDP > {thr:.3f}; removes "
+          f"{int((~keep).sum())}/{len(rows)}):")
+    print(f"    Spearman(P,pDockQ):   all {spearmanr(P,pdq)[0]:+.3f}  ->  kept {spearmanr(P[keep],pdq[keep])[0]:+.3f}")
+    print(f"    precision@top-100 (pDockQ>0.23):  all {prec_at_k(np.ones(len(rows),bool))*100:.0f}%  ->  "
+          f"kept {prec_at_k(keep)*100:.0f}%")
+    print(f"    mean pDockQ of model's top-100:   all {pdq[np.argsort(-P)[:100]].mean():.3f}  ->  "
+          f"kept {pdq[np.where(keep)[0][np.argsort(-P[keep])[:100]]].mean():.3f}")
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--stage", choices=["reference", "crosscheck", "investigate", "foldbatch"],
+    ap.add_argument("--stage",
+                    choices=["reference", "crosscheck", "investigate", "filtertest", "foldbatch"],
                     required=True)
     ap.add_argument("--space", choices=["idg", "sars_host"], default="idg")
     ap.add_argument("--top-k", type=int, default=20)
@@ -335,6 +414,8 @@ def main():
         crosscheck()
     elif args.stage == "investigate":
         investigate()
+    elif args.stage == "filtertest":
+        filtertest()
     else:
         foldbatch(args.space, args.top_k)
 
