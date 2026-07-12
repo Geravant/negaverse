@@ -330,8 +330,12 @@ def plot_manifold(graph: TypedInteractionGraph, records, out_path: str | Path,
 
 
 def render_all(graph: TypedInteractionGraph, records, out_dir: str | Path,
-               stats: dict | None = None, seed: int = 0, n_ref: int = 500):
-    """Render every demo panel from a pipeline run's records (+ stats)."""
+               stats: dict | None = None, seed: int = 0, n_ref: int = 500,
+               x_axis: "tuple | None" = None):
+    """Render every demo panel from a pipeline run's records (+ stats).
+
+    x_axis (optional) overrides the interactive map's default topology x-axis with
+    another looks-real lens — see compute_traces (used for DRYAD's sequence axis)."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(seed)
@@ -356,7 +360,7 @@ def render_all(graph: TypedInteractionGraph, records, out_dir: str | Path,
             import json as _json
             from .interactive import compute_traces
             (out_dir / "interactive3d.json").write_text(
-                _json.dumps(compute_traces(graph, records, seed, n_ref)))
+                _json.dumps(compute_traces(graph, records, seed, n_ref, x_axis=x_axis)))
             written.append(out_dir / "interactive3d.json")
         except Exception:
             pass                          # 3D panel is optional

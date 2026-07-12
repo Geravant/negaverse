@@ -38,17 +38,26 @@ def get_plotly_js() -> str | None:
 
 
 def compute_traces(graph: TypedInteractionGraph, records, seed: int = 0,
-                   n_ref: int = 400) -> dict:
+                   n_ref: int = 400, x_axis: "tuple | None" = None) -> dict:
+    """x_axis lets a caller replace the default topology x-axis with another
+    "looks-real" lens — e.g. sequence/ESM2 resemblance on graphs too sparse for
+    topology (DRYAD). Pass (fn(u,v)->float|None, title, missing_note)."""
     from ..streams import TopologyFilter
     from ..io.annotations import build_annotation_table
     from .plots import _random_nonedges
-    tf = TopologyFilter(); tf.fit(graph)
     ann = build_annotation_table()
     rng = np.random.default_rng(seed)
 
-    def risk(u, v):
-        s = tf.score(graph, u, v); ev = s.evidence or {}
-        return float(ev.get("risk", 0.0)) if s.value is not None else 0.0
+    if x_axis is not None:
+        x_fn, x_title, x_missing = x_axis
+    else:
+        tf = TopologyFilter(); tf.fit(graph)
+
+        def x_fn(u, v):
+            s = tf.score(graph, u, v); ev = s.evidence or {}
+            return float(ev.get("risk", 0.0)) if s.value is not None else None
+
+        x_title, x_missing = "looks real (network shape)", "no network-shape data"
 
     def comp(u, v):
         cu, cv = ann.get(u, {}).get("compartments"), ann.get(v, {}).get("compartments")
@@ -73,21 +82,53 @@ def compute_traces(graph: TypedInteractionGraph, records, seed: int = 0,
             ("our chosen non-pairs", hard, "#e9c46a"),
             ("risky — may interact", risky, "#e63946")]
 
+    # The x-axis (topology risk) is computable for ANY pair straight from the
+    # graph; only y (compartments) and z (hydrophobicity) need external
+    # annotation. On graphs where one partner class is unannotated — e.g. the
+    # viral proteins in the SARS-CoV-2 viral-host graph — dropping a pair for a
+    # missing y/z would silently erase every positive and every emitted negative
+    # (they all touch a viral protein), leaving only annotated host-host randoms.
+    # So keep the pair, park the missing lens on the base plane (0.0), and say so
+    # in the hover — the point stays visible and honest on the axes that do apply.
+    _BASE = 0.0
+    # When a whole regime is degenerate on these axes — e.g. SARS emitted
+    # negatives are all at the topology floor (x=0.02) with viral y=z on the base
+    # plane — 400 identical points collapse to one occluded dot and the colour
+    # vanishes. A tiny seeded jitter spreads exact-overlaps into a visible cloud
+    # without touching the read (positives sit ~0.6 on x, negatives ~0.02).
+    jit = np.random.default_rng(seed)
+
+    def _jitter(vals):
+        return [round(v + float(jit.normal(0.0, 0.006)), 4) for v in vals]
+
     traces = []
     for name, pairs, col in cats:
         xs, ys, zs, txt = [], [], [], []
         for u, v in pairs:
-            y, z = comp(u, v), hyd(u, v)
-            if y is None or z is None:
-                continue
-            xs.append(round(risk(u, v), 3)); ys.append(round(y, 3)); zs.append(round(z, 3))
-            fl = flagmap.get((u, v)) or flagmap.get((v, u)) or []
-            txt.append(f"{u} × {v}" + (f"<br>{'; '.join(fl)}" if fl else ""))
+            x, y, z = x_fn(u, v), comp(u, v), hyd(u, v)
+            missing = []
+            if x is None:
+                # On the default topology axis a None is rare → park it on the
+                # floor. On an alternate axis (e.g. DRYAD's ESM2 model) a None
+                # means "no score", and parking it at 0 would fake a "looks
+                # non-real" reading — so drop the pair instead.
+                if x_axis is not None:
+                    continue
+                x, _m = _BASE, missing.append(x_missing)
+            if y is None:
+                y, _m = _BASE, missing.append("no compartment data")
+            if z is None:
+                z, _m = _BASE, missing.append("no hydrophobicity data")
+            xs.append(round(x, 3)); ys.append(round(y, 3)); zs.append(round(z, 3))
+            fl = list(flagmap.get((u, v)) or flagmap.get((v, u)) or [])
+            note = "; ".join(fl + missing)
+            txt.append(f"{u} × {v}" + (f"<br>{note}" if note else ""))
         traces.append({"type": "scatter3d", "mode": "markers",
-                       "name": f"{name} ({len(xs)})", "x": xs, "y": ys, "z": zs,
+                       "name": f"{name} ({len(xs)})",
+                       "x": _jitter(xs), "y": _jitter(ys), "z": _jitter(zs),
                        "text": txt, "hoverinfo": "text",
                        "marker": {"size": 3, "color": col, "opacity": 0.75}})
-    layout = {"scene": {"xaxis": {"title": "looks real (network shape)"},
+    layout = {"scene": {"xaxis": {"title": x_title},
                         "yaxis": {"title": "biology allows it (compartments)"},
                         "zaxis": {"title": "chemistry match (hydrophobicity)"}},
               "margin": {"l": 0, "r": 0, "t": 0, "b": 0},

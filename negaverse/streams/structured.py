@@ -45,6 +45,16 @@ class KnownPositiveVeto(Filter):
             self._sources_path, restrict_to=set(graph.g.nodes()))
         self.known_positives |= extra
 
+    def certification(self) -> dict:
+        """Was this run actually screened against external known-positive DBs?
+        Fail-closed honesty: a run whose BioGRID/IntAct files are missing (or match
+        zero graph nodes) is UNCERTIFIED — its "negatives" were only screened against
+        the loaded graph, so hidden positives from those DBs may have leaked in."""
+        rep = self.sources_report or {}
+        loaded = {k: n for k, n in (rep.get("loaded") or {}).items() if n > 0}
+        return {"certified": bool(loaded),
+                "loaded": loaded, "missing": list(rep.get("missing") or [])}
+
     def score(self, graph: TypedInteractionGraph, u: str, v: str) -> StreamScore:
         if graph.is_positive(u, v) or frozenset((u, v)) in self.known_positives:
             return StreamScore(self.name, value=None, veto=True,

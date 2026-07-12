@@ -24,6 +24,7 @@ class Scored:
     hardness: float          # topo percentile in [0,1]; higher = nearer positives
     sub_scores: dict
     conf_evidence: dict = field(default_factory=dict)   # per-stream reported confidence
+    degsum: float = 0.0      # endpoint degree sum (for PSM propensity matching)
 
 
 def degree_matched_eval(
@@ -57,15 +58,21 @@ def hard_train(scored: list[Scored], n: int, exclude: set[tuple[str, str]]) -> l
 
 
 def select_train(scored: list[Scored], n: int, exclude: set[tuple[str, str]],
-                 mode: str = "stacked") -> list[Scored]:
+                 mode: str = "stacked", proportions: tuple = (0.6, 0.3, 0.1),
+                 seed: int = 0, pos_degsums: list | None = None,
+                 psm_cap: float = 0.7) -> list[Scored]:
     """Pick the n emitted training negatives from the scored pool. See
-    PipelineConfig.train_selection for the modes and the evidence (FILTER-EFFECTIVENESS §11):
+    PipelineConfig.train_selection for the modes and the evidence (FILTER-EFFECTIVENESS):
 
       * "stacked" (default) — hard tail (top 4n by hardness) RE-RANKED by fused
-        confidence; keeps the pairs every signal agrees are true negatives. Best arm.
+        confidence; keeps the pairs every signal agrees are true negatives.
       * "safe" — the n highest-confidence negatives across the whole pool.
-      * "hard" — the n hardest by topology alone (the historical default; loses to random).
+      * "hard" — the n hardest by topology alone (historical default; loses to random).
+      * "mixture" — a curriculum blend (`proportions` = representative/safe/hard) that
+        keeps training sampling close to the evaluation population (Park & Marcotte)
+        while retaining some hard negatives. Representative = pseudo-random by pair hash.
     """
+    import hashlib
     pool = [s for s in scored if (s.u, s.v) not in exclude]
     if mode == "hard":
         pool.sort(key=lambda s: s.hardness, reverse=True)
@@ -77,4 +84,58 @@ def select_train(scored: list[Scored], n: int, exclude: set[tuple[str, str]],
         hard = sorted(pool, key=lambda s: s.hardness, reverse=True)[:max(4 * n, n)]
         hard.sort(key=lambda s: s.confidence, reverse=True)
         return hard[:min(n, len(hard))]
-    raise ValueError(f"unknown train_selection mode: {mode!r} (want hard|safe|stacked)")
+    if mode == "mixture":
+        rep_f, safe_f, hard_f = proportions
+        n_hard = int(round(n * hard_f)); n_safe = int(round(n * safe_f))
+        n_rep = max(0, n - n_hard - n_safe)
+        chosen: dict = {}
+        key = lambda s: (s.u, s.v)
+        hard = sorted(pool, key=lambda s: s.hardness, reverse=True)[:max(4 * n_hard, n_hard)]
+        hard.sort(key=lambda s: s.confidence, reverse=True)
+        for s in hard[:n_hard]:
+            chosen[key(s)] = s
+        for s in sorted(pool, key=lambda s: s.confidence, reverse=True):
+            if len(chosen) >= n_hard + n_safe:
+                break
+            chosen.setdefault(key(s), s)
+        # representative: deterministic pseudo-random order by salted pair hash
+        rest = [s for s in pool if key(s) not in chosen]
+        rest.sort(key=lambda s: hashlib.sha1(f"{seed}:{s.u}:{s.v}".encode()).hexdigest())
+        for s in rest:
+            if len(chosen) >= n:
+                break
+            chosen[key(s)] = s
+        return list(chosen.values())[:n]
+    if mode == "psm":
+        # propensity-score matching: greedy nearest-degree-sum match to the positives,
+        # restricted to the clean pool (hardness ≤ psm_cap — hidden positives concentrate
+        # in the high-hardness tail). Underperforms `stacked` in the benchmark
+        # (FILTER-EFFECTIVENESS §5: matching to positives concentrates on hubs); offered
+        # for parity/exploration, not recommended as default.
+        import numpy as np
+        clean = [s for s in pool if s.hardness <= psm_cap]
+        if not clean:
+            clean = pool
+        buckets: dict = {}
+        for s in clean:
+            buckets.setdefault(round(s.degsum), []).append(s)
+        rng = np.random.default_rng(seed)
+        for b in buckets.values():
+            rng.shuffle(b)
+        keys = np.array(sorted(buckets)) if buckets else np.array([])
+        targets = list(pos_degsums or [s.degsum for s in clean])
+        rng.shuffle(targets)
+        out: list[Scored] = []
+        for d in targets:
+            if len(out) >= n or len(keys) == 0:
+                break
+            k = keys[int(np.argmin(np.abs(keys - d)))]
+            while buckets.get(k) is not None and not buckets[k]:
+                keys = keys[keys != k]
+                if len(keys) == 0:
+                    break
+                k = keys[int(np.argmin(np.abs(keys - d)))]
+            if len(keys) and buckets.get(k):
+                out.append(buckets[k].pop())
+        return out[:n]
+    raise ValueError(f"unknown train_selection mode: {mode!r} (want hard|safe|stacked|mixture|psm)")

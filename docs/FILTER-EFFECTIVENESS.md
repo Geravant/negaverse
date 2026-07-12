@@ -219,3 +219,154 @@ PYTHONPATH=. python3 scripts/bench_corrected.py --dataset dryad --max-positives 
 ```
 
 Needs `lightgbm` (+ `libomp` on macOS); drop `lgbm` from `--models` to run RandomForest only.
+
+---
+
+## 5. Agent-review roadmap — what we built, measured, and deferred
+
+An architectural review recommended turning negaverse from "rank by one score" into a
+constrained design system with the principle: **safety authorises the negative label,
+hardness determines usefulness, coverage determines batch membership — keep them separate.**
+We implemented it in three tiers, each with a full re-evaluation (HuRI 20k + DRYAD × RF+LGBM,
+3 seeds). The headline: the principle is right and now *measured*, but the concrete
+new selectors (mixture, counterfactual) do **not** beat `stacked` — because without
+verification they let contamination back in, which the injection backtest proves.
+
+### Tier 1 — rigor fixes (verdict unchanged, cleaner)
+* **Split-before-scoring** — the selector now fits on train edges only; held-out test
+  positives are excluded from the candidate pool (they were previously eligible to be
+  sampled *as training negatives* — a second leak). After the fix the verdict holds and
+  sharpens: `stacked` still wins (HuRI +0.003, DRYAD +0.025) and `topology_hard` is *more*
+  clearly catastrophic (HuRI Δ **−0.468** — the leakage had propped it up).
+* **Naming honesty** — the fused mean is documented as an UNCALIBRATED heuristic score, not a
+  probability (`fusion.py`).
+* **Fail-closed certification** — `KnownPositiveVeto.certification()`; the bench prints
+  **CERTIFIED / \*\*\* UNCERTIFIED \*\*\*** with loaded/missing DBs. All runs here are CERTIFIED
+  (BioGRID 273k + IntAct 176k).
+
+### Tier 2 — mixture selector (honest negative result)
+`train_selection="mixture"` (representative / safe / verified-hard, sweepable) is now a
+shippable mode, but **it does not beat `stacked`**:
+
+| arm | HuRI·RF ΔAUROC | DRYAD·RF ΔAUROC | note |
+|---|---:|---:|---|
+| `stacked` (default) | +0.005 | +0.031 | best |
+| `topology_safe` | +0.001 | +0.036 | ties/wins |
+| `mix[60/30/10]` | +0.004 | **−0.019** | hard fraction hurts |
+| `mix[50/30/20]` | +0.005 | +0.013 | still < stacked |
+
+The unverified hard fraction is **contaminated dead weight** (see the injection rate below),
+so blending it in drags the mixture toward random. The mixture would only pay off with a
+*verified* hard fraction (LLM-gated), which needs gene-symbol context the HuRI bench lacks.
+`stacked` stays the default.
+
+### Tier 3 — matched counterfactuals + injection backtest
+
+**Hidden-positive injection backtest (`--injection-test`).** Inject K real interactions that
+are absent from the training graph (veto-bypassed = truly hidden), measure the fraction each
+arm wrongly selects as a negative, AND the downstream AUROC damage under each learner. This
+tests the exact failure mode negaverse claims to solve. The **selection rate is model-independent**
+(it precedes the learner); the AUROC columns show whether the contamination it selects actually
+damages the model — checked under both RF and LightGBM (3 seeds).
+
+*HuRI 20k:*
+
+| arm | hidden-pos selected | AUROC (RF) | AUROC (LGBM) |
+|---|---:|---:|---:|
+| `random_veto` | 8.2 % | 0.862 | 0.674 |
+| **`topology_hard`** | **74.8 %** | **0.385** | **0.359** |
+| `topology_safe` | 0.1 % | 0.865 | 0.851 |
+| **`stacked`** | 0.4 % | 0.869 | 0.803 |
+| `counterfactual` | 47.7 % | 0.792 | 0.446 |
+
+*DRYAD:*
+
+| arm | hidden-pos selected | AUROC (RF) | AUROC (LGBM) |
+|---|---:|---:|---:|
+| `random_veto` | 0.6 % | 0.625 | 0.563 |
+| **`topology_hard`** | **64.3 %** | 0.328 | 0.270 |
+| `topology_safe` | 0.0 % | 0.658 | 0.613 |
+| **`stacked`** | 0.1 % | 0.658 | 0.609 |
+| `counterfactual` | 5.0 % | 0.568 | 0.500 |
+
+**Model-robust, and *stronger* under LGBM.** The ordering is identical under both learners:
+`topology_hard`'s 65–75 % contamination makes it catastrophic (AUROC 0.27–0.39) while `stacked`/
+`safe` (~0 % contamination) stay top. Notably **LightGBM is *more* damaged by the contamination**
+than RF (counterfactual 0.79→0.45; every contaminated arm drops further) — boosting amplifies the
+mislabeled-negative harm, so the case for the clean arms is stronger, not weaker, under LGBM.
+
+→ **The old default (`topology_hard`) actively selects ~3 of every 4 hidden positives** — direct,
+scale-verified proof that the L3-hard tail is where hidden positives concentrate. **The shipped
+default (`stacked`) and `topology_safe` catch ~100 %** of them. This is the single cleanest
+validation in the project: the failure mode is real, and the fix works.
+
+**Matched counterfactuals (`counterfactual` arm) — negative result.** Degree-matched veto-clean
+negatives (endpoint-degree sum matched to the positives) **lose** to random (AUROC Δ −0.060 HuRI,
+−0.036 DRYAD) and select **50 %** hidden positives. Matching *without an independent safety
+blocking reason* re-introduces exactly the positive-like/hub contamination it was meant to avoid
+— confirming the review's own caveat that counterfactuals need a blocking reason, not just
+matching. Safety must gate the label; matching alone does not.
+
+**Propensity-score matching (`psm` arm) — the counterfactual done right, and it decomposes the
+failure.** PSM flips the order: restrict to the VERIFIED-CLEAN region first (veto-clean AND
+topology-hardness ≤ `cap` — the injection backtest showed hidden positives concentrate in the
+high-hardness tail), *then* degree-match to the positives. Sweeping `cap` down cleans the pool,
+and the two measured effects separate cleanly (HuRI 20k, RF, 3 seeds):
+
+| arm | ΔAUROC vs random | hidden-pos selected | leaked (purity) |
+|---|---:|---:|---:|
+| `counterfactual` (whole pool, cap=1.0) | −0.060 | 50.0 % | 2.3 |
+| `psm[cap=0.9]` | −0.034 | — | 0.3 |
+| `psm[cap=0.7]` | **−0.023** | 6.8 % | 0.3 |
+| `psm[cap=0.5]` | −0.028 | **2.6 %** | 0.7 |
+| `topology_safe` / `stacked` | +0.002 / +0.005 | 0.1 / 0.2 % | 0.0 |
+
+→ **PSM validates the idea and isolates *why* matching fails.** Restricting to the clean pool
+works exactly as predicted: hidden-positive selection collapses **50 % → 2.6 %** and AUROC recovers
+**+0.037** (counterfactual −0.060 → psm −0.023). So ~60 % of the counterfactual's deficit *was*
+contamination — the clean-pool fix removes it. **But PSM still loses to random** (−0.023) and
+trails `stacked`/`safe`. That residual is *not* contamination (it's ~clean at cap=0.5); it is
+**distribution mismatch** — degree-matching to the positives concentrates the negatives on hubs,
+so training no longer resembles the representative gold-test population (the Park & Marcotte point).
+The lesson is decisive: **matching negatives *to the positives* is the wrong objective when the
+evaluation set is representative.** `safe`/`stacked` win because they match the *evaluation*
+population (clean and representative), not the positives. Same ordering under LGBM.
+
+**Match to the EVALUATION population, not the positives (`eval_matched` arm) — the fix confirmed.**
+Leakage-safe: split the gold negatives into a MATCH fold (derive the target degree distribution,
+resampled to full size) and a disjoint TEST fold; degree-match the clean pool to the match fold;
+test on the other fold. Δ AUROC vs `random_veto`, 3 seeds:
+
+| arm | HuRI·RF | HuRI·LGBM | DRYAD·RF | DRYAD·LGBM |
+|---|---:|---:|---:|---:|
+| `psm_to_positives` | −0.019 | −0.017 | −0.020 | −0.025 |
+| `eval_matched` | +0.011 | +0.064 | +0.029 | +0.042 |
+| **`eval_matched_clean`** | +0.013 | +0.105 | +0.034 | +0.055 |
+| `stacked` (default) | +0.014 | +0.115 | +0.033 | +0.047 |
+
+→ **Flipping the match target from positives to the eval population is worth ~+0.05–0.09** (every
+`eval_matched` cell beats random; every `psm_to_positives` cell loses). Restricting to the clean
+pool (`eval_matched_clean`) adds a bit more and **ties or beats `stacked` in 2 of 4 cells**. This
+confirms the principle the whole section converges on: **the winning objective is clean +
+representative-of-the-evaluation, never matched-to-the-positives.** `topology_safe` already
+approximates eval-matching (broad + clean), which is why it was a top arm all along; `eval_matched`
+makes that explicit and measurable. It's a legitimate co-best selector — no clear winner over
+`stacked`/`safe`, but it validates *why* they win.
+
+### Deferred (documented, not built) — with rationale
+* **nnPU / non-edges-as-unlabeled** — the theoretically correct framing (it *is* the
+  hidden-positive problem), but a downstream-*model* change, not a negative-generator change; a
+  clean future baseline.
+* **Cross-fitted calibration + lower-confidence-bound + full vector candidate state**
+  (`p_negative_lcb`, hardness vector, epistemic uncertainty, selection propensity, label_status)
+  — the right production architecture; weeks-scale, over-scoped for this tool. The naming fix
+  (Tier 1) is the honest stopgap.
+* **Temporal backtest** (freeze DBs at *t*, check *t+Δ*) — the gold-standard purity test, but
+  **data-gated** (needs dated BioGRID/IntAct snapshots). The injection backtest above is the
+  feasible stand-in and already exercises the same failure mode.
+
+### Reproduce (tiers)
+```bash
+PYTHONPATH=. python3 scripts/bench_corrected.py --dataset huri --max-positives 20000 --seeds 0 1 2 --models rf lgbm --mixture
+PYTHONPATH=. python3 scripts/bench_corrected.py --dataset huri --max-positives 20000 --seeds 0 1 2 --injection-test --inject-k 1000
+```
