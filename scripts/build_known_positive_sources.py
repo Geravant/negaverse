@@ -1,8 +1,9 @@
 """Build external known-positive PPI source files for KnownPositiveVeto.
 
-Turns raw BioGRID + IntAct human downloads into the 2-column pair files that
-`rules/sources.yaml` declares, so the veto stops treating those sources as
-"missing" and actually removes documented interactions from the negative pool.
+Turns raw BioGRID + IntAct human downloads, and STRING's own already-downloaded
+data, into the 2-column pair files that `rules/sources.yaml` declares, so the
+veto stops treating those sources as "missing" and actually removes documented
+interactions from the negative pool.
 
 Two ID spaces are emitted per source, because our two PPI graphs use different
 node ids:
@@ -12,22 +13,28 @@ node ids:
 Inputs (place first, all gitignored under local-docs/):
   * local-docs/biogrid/BIOGRID-ORGANISM-LATEST.tab3.zip   (all-organism tab3 zip)
   * local-docs/intact/human.zip                            (IntAct species/human.zip)
+  * local-docs/string/9606.protein.links.detailed.v12.0.txt.gz +
+    local-docs/string/9606.protein.aliases.v12.0.txt.gz     (STRING v12.0, human)
 
 Outputs:
   * local-docs/biogrid/biogrid_human_pairs.tsv         (uniprot)
   * local-docs/intact/intact_human_pairs.tsv           (uniprot)
+  * local-docs/string/string_experimental_high_confidence_pairs.tsv (uniprot)
   * local-docs/biogrid/biogrid_human_pairs_ensembl.tsv (ensembl)
   * local-docs/intact/intact_human_pairs_ensembl.tsv   (ensembl)
+  * local-docs/string/string_experimental_high_confidence_pairs_ensembl.tsv (ensembl)
   * local-docs/mappings/uniprot_ensg_human.tsv         (cached UniProt->ENSG map)
 
     PYTHONPATH=. python scripts/build_known_positive_sources.py
 
 Ensembl mapping needs the network (UniProt REST, paginated ~40 pages); it is
 cached, so re-runs are instant. Pass --no-ensembl to skip it (UniProt files only).
+STRING's own files are already local (no network needed for that source).
 """
 from __future__ import annotations
 
 import argparse
+import gzip
 import io
 import json
 import re
@@ -49,8 +56,12 @@ except Exception:
 ROOT = Path(__file__).resolve().parent.parent
 BIOGRID_ZIP = ROOT / "local-docs/biogrid/BIOGRID-ORGANISM-LATEST.tab3.zip"
 INTACT_ZIP = ROOT / "local-docs/intact/human.zip"
+STRING_ALIASES = ROOT / "local-docs/string/9606.protein.aliases.v12.0.txt.gz"
+STRING_LINKS = ROOT / "local-docs/string/9606.protein.links.detailed.v12.0.txt.gz"
 BIOGRID_OUT = ROOT / "local-docs/biogrid/biogrid_human_pairs.tsv"
 INTACT_OUT = ROOT / "local-docs/intact/intact_human_pairs.tsv"
+STRING_OUT = ROOT / "local-docs/string/string_experimental_high_confidence_pairs.tsv"
+STRING_EXPERIMENTAL_THRESHOLD = 900   # raw STRING units (0-1000) == 0.9 rescaled
 MAP_CACHE = ROOT / "local-docs/mappings/uniprot_ensg_human.tsv"
 SEARCH = "https://rest.uniprot.org/uniprotkb/search"
 
@@ -158,6 +169,50 @@ def build_intact() -> set[frozenset]:
 
 
 # --------------------------------------------------------------------------- #
+# STRING v12.0: experimental channel > 0.9 -> known positive (direct wet-lab
+# evidence, a plain "documented interaction" fact — see rules/SOURCES.md for
+# why this is a known-positive source rather than a rule-engine veto rule).
+# Cols (1-indexed, whitespace-separated): protein1 protein2 neighborhood
+# fusion cooccurence coexpression experimental database textmining
+# combined_score. Both already-downloaded local files, no network needed.
+# --------------------------------------------------------------------------- #
+def build_string() -> set[frozenset]:
+    if not STRING_LINKS.exists() or not STRING_ALIASES.exists():
+        print(f"  [string] SKIP — {STRING_LINKS} / {STRING_ALIASES} not found")
+        return set()
+
+    ensp_to_uni: dict[str, str] = {}
+    with gzip.open(STRING_ALIASES, "rt") as fh:
+        next(fh)  # header
+        for line in fh:
+            ensp, alias, source = line.rstrip("\n").split("\t")
+            if "UniProt_AC" in source and ensp not in ensp_to_uni:
+                ensp_to_uni[ensp] = alias
+    print(f"  [string] mapped {len(ensp_to_uni):,} STRING protein ids to UniProt")
+
+    pairs: set[frozenset] = set()
+    rows = kept = 0
+    with gzip.open(STRING_LINKS, "rt") as fh:
+        header = next(fh).split()
+        col = header.index("experimental")
+        for line in fh:
+            parts = line.split()
+            rows += 1
+            if int(parts[col]) <= STRING_EXPERIMENTAL_THRESHOLD:
+                continue
+            a, b = ensp_to_uni.get(parts[0]), ensp_to_uni.get(parts[1])
+            if a and b and a != b:
+                pairs.add(frozenset((a, b)))
+                kept += 1
+    print(f"  [string] {rows:,} rows -> {kept:,} pairs with experimental > 0.9, "
+          f"{len(pairs):,} unique")
+    _write_pairs(STRING_OUT, pairs,
+                 f"STRING v12.0 experimental channel > 0.9 (raw > {STRING_EXPERIMENTAL_THRESHOLD}) "
+                 f"— human-human, UniProt. Built by scripts/build_known_positive_sources.py")
+    return pairs
+
+
+# --------------------------------------------------------------------------- #
 # UniProt -> Ensembl-gene map (human reviewed proteome), cached to disk.
 # --------------------------------------------------------------------------- #
 def _get(url):
@@ -240,8 +295,9 @@ def main():
     print("Building UniProt-space pair files (engages the SARS-CoV-2 graph) ...")
     bg = build_biogrid()
     ia = build_intact()
+    st = build_string()
 
-    if args.no_ensembl or (not bg and not ia):
+    if args.no_ensembl or (not bg and not ia and not st):
         return
 
     print("\nBuilding Ensembl-space pair files (engages the HuRI benchmark) ...")
@@ -255,6 +311,9 @@ def main():
     if ia:
         to_ensembl(ia, uni2ensg, huri, INTACT_OUT.with_name("intact_human_pairs_ensembl.tsv"),
                    "IntAct human molecular")
+    if st:
+        to_ensembl(st, uni2ensg, huri, STRING_OUT.with_name("string_experimental_high_confidence_pairs_ensembl.tsv"),
+                   "STRING experimental > 0.9")
 
 
 if __name__ == "__main__":

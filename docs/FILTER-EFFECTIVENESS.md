@@ -174,14 +174,32 @@ graph. (Overall-AUROC deltas are all within ±0.004 = noise.)
 HuRI-LGBM −0.004, DRYAD-RF **+0.048**, DRYAD-LGBM +0.008 — net positive on the
 biology-relevant stratum in 3 of 4 cells.
 
-**Which rules earn their place:**
-1. **`evolutionary_coupling_absence` + `string_low_confidence_non_interaction` contribute
-   *exactly nothing* — anywhere** (Δ = 0.000 in all 8 cells). They **never fire**: no
-   `evolutionary_coupling.tsv` exists, and `string_score_with_b` isn't even registered in
-   `_PAIR_FIELDS`. Dead weight — drop them, or wire the data.
-2. **`colocalization_mismatch` does not measurably contribute** — within noise on HuRI, zero
-   coverage on DRYAD (its `go_cc` localization table is ENSG-keyed, so it barely overlaps
-   DRYAD's UniProt nodes). Not earning its place as shipped.
+> **Update — the `colocalization_mismatch` and `string_low_confidence_non_interaction` rows
+> above are stale; this table hasn't been re-run since.** Both the diagnosis and the fixes are
+> now known (see `rules/AUTHORING.md` Step 5), but the `--rule-ablation` numbers in the table
+> still reflect the pre-fix state. Details in the bullets below.
+
+**Which rules earn their place** (as measured at the time this table was generated):
+1. **`evolutionary_coupling_absence` + `string_low_confidence_non_interaction` contributed
+   *exactly nothing* — anywhere** (Δ = 0.000 in all 8 cells) **at the time**. Neither fired: no
+   `evolutionary_coupling.tsv` existed, and the STRING field (`string_score_with_b` then) wasn't
+   registered in `_PAIR_FIELDS` at all. Since then: `evolutionary_coupling_absence` never found
+   a reliable signal after extensive calibration and is being removed from the rule set entirely
+   (separate PR — see `rules/AUTHORING.md` Step 1 for the full writeup). The STRING field was
+   renamed and reworked (`string_score_with_b` → `string_experimental_score_with_b`, STRING's
+   direct-evidence `experimental` channel instead of the blended `combined_score`) and *is* now
+   registered in `_PAIR_FIELDS` — but still has no data computed at DRYAD/HuRI scale, and is
+   structurally blocked on HuRI specifically until `scripts/string_channel.py` gains Ensembl-ID
+   support (it currently only resolves UniProt accessions). So its "dead, never fires" verdict
+   is still accurate today — just for an updated reason, not the one stated above.
+2. **`colocalization_mismatch`'s "zero coverage on DRYAD" here is fixed, but not re-measured.**
+   The 0% figure was caused by an ENSG/UniProt ID mismatch bug in
+   `scripts/fetch_go_localization.py`, since fixed — DRYAD coverage is now 93%. A direct
+   calibration (`scripts/calibrate_colocalization_threshold.py`, not this ablation harness)
+   shows real signal on DRYAD (AUROC 0.906 optimistic / 0.875 protein-disjoint; weaker on
+   UPNA-PPI) — see `rules/ppi.yaml`'s rationale. The Δ AUROC_noniso numbers in the table above
+   predate that fix; treat this row as superseded pending a `--rule-ablation` re-run with
+   current coverage, not as this rule's current standing.
 3. **`hydrophobicity_interface` is the one rule that genuinely helps** — a consistent negative
    Δ on the non-isolated stratum across both datasets and both models (strongest on DRYAD-RF,
    +0.043). The keeper.

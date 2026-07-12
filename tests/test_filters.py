@@ -12,7 +12,7 @@ from negaverse.graph import TypedInteractionGraph
 from negaverse.rule_engine import Rule
 from negaverse.schema import StreamScore
 from negaverse.streams import Filter, Stage, register, build_filters, registered
-from negaverse.streams import RuleGradedFilter
+from negaverse.streams import RuleGradedFilter, RuleVetoFilter
 from negaverse.io import load_sars_cov2_graph
 
 
@@ -112,6 +112,43 @@ def test_pairwise_annotation_does_not_leak_across_partners():
     # and P1-P2 must still fire correctly afterward, unaffected by the P1-P3 call
     still_fires = f.score(graph, "P1", "P2")
     assert still_fires.value is not None and still_fires.value > 0.5
+
+
+def _pairwise_field_veto_rule() -> Rule:
+    """A hypothetical veto rule over a pairwise field — no shipped rule in
+    ppi.yaml currently uses `effect: veto` with a pairwise field (STRING's
+    high-confidence experimental evidence is instead handled as a
+    known-positive source, rules/sources.yaml, not a rule-engine rule — see
+    that file and rules/SOURCES.md), so this exists purely to prove the
+    engine mechanism works, independent of what ships today."""
+    return Rule(id="pairwise_veto_test", modality="ppi",
+                applies_to=("protein", "protein"),
+                when="a.string_experimental_score_with_b > 0.9",
+                effect="veto", weight=0.0).compile()
+
+
+def test_veto_rule_reads_pairwise_annotation():
+    """RuleVetoFilter shares _RuleFilterBase with RuleGradedFilter, so a
+    pair-keyed field (string_experimental_score_with_b) should reach a veto
+    rule's `when` the same way it reaches a graded rule's — proving the
+    pairwise-injection mechanism isn't graded-filter-specific."""
+    graph = TypedInteractionGraph.from_edges(
+        edges=[("P1", "P2")],
+        node_type={"P1": "protein", "P2": "protein", "P3": "protein"})
+    pair_ann = {"string_experimental_score_with_b": {
+        frozenset({"P1", "P2"}): 0.95,   # above 0.9 -> veto fires
+        frozenset({"P1", "P3"}): 0.2,    # below 0.9 -> no veto
+    }}
+    f = RuleVetoFilter(rules=[_pairwise_field_veto_rule()],
+                       annotations={}, pair_annotations=pair_ann)
+    f.fit(graph)
+
+    vetoed = f.score(graph, "P1", "P2")
+    assert vetoed.veto is True
+    assert "pairwise_veto_test" in vetoed.flags
+
+    not_vetoed = f.score(graph, "P1", "P3")
+    assert not_vetoed.veto is False
 
 
 def test_build_filters_by_modality():
