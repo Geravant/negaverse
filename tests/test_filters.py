@@ -62,26 +62,26 @@ def test_new_graded_filter_flows_through_without_pipeline_edits():
     assert "const_test" in result.stats["filters"]["graded"]
 
 
-def _coupling_rule() -> Rule:
-    return Rule(id="evolutionary_coupling_absence_test", modality="ppi",
+def _string_low_confidence_rule() -> Rule:
+    return Rule(id="string_low_confidence_non_interaction_test", modality="ppi",
                 applies_to=("protein", "protein"),
-                when="a.evolutionary_coupling_score_with_b < 0.1",
+                when="a.string_score_with_b < 0.1",
                 effect="safer_negative", weight=0.5).compile()
 
 
 def test_pairwise_annotation_fires_for_the_right_pair():
-    """A pair-keyed field (evolutionary_coupling_score_with_b) should fire the
+    """A pair-keyed field (string_score_with_b) should fire the
     rule for a pair whose score clears the threshold, and abstain for a pair
     that doesn't — proving build_pair_annotation_table's values actually reach
     the rule engine as `a.<field>`."""
     graph = TypedInteractionGraph.from_edges(
         edges=[("P1", "P2")],
         node_type={"P1": "protein", "P2": "protein", "P3": "protein"})
-    pair_ann = {"evolutionary_coupling_score_with_b": {
+    pair_ann = {"string_score_with_b": {
         frozenset({"P1", "P2"}): 0.05,   # below 0.1 -> rule fires
         frozenset({"P1", "P3"}): 0.9,    # above 0.1 -> rule doesn't fire
     }}
-    f = RuleGradedFilter(rules=[_coupling_rule()], annotations={}, pair_annotations=pair_ann)
+    f = RuleGradedFilter(rules=[_string_low_confidence_rule()], annotations={}, pair_annotations=pair_ann)
     f.fit(graph)
 
     fired = f.score(graph, "P1", "P2")
@@ -98,11 +98,11 @@ def test_pairwise_annotation_does_not_leak_across_partners():
     graph = TypedInteractionGraph.from_edges(
         edges=[("P1", "P2"), ("P1", "P3")],
         node_type={"P1": "protein", "P2": "protein", "P3": "protein"})
-    pair_ann = {"evolutionary_coupling_score_with_b": {
+    pair_ann = {"string_score_with_b": {
         frozenset({"P1", "P2"}): 0.05,
         frozenset({"P1", "P3"}): 0.9,
     }}
-    f = RuleGradedFilter(rules=[_coupling_rule()], annotations={}, pair_annotations=pair_ann)
+    f = RuleGradedFilter(rules=[_string_low_confidence_rule()], annotations={}, pair_annotations=pair_ann)
     f.fit(graph)
 
     f.score(graph, "P1", "P2")            # fires; if this mutated self._ann["P1"]...

@@ -27,7 +27,19 @@ Examples:
 - If two proteins are both in the same complex-forming compartment and co-expressed
   → **riskier** negative (might be a hidden positive; use to decrease confidence).
 - If two proteins show no detectable co-evolution signal across orthologs
-  (e.g. low mutual information / evolutionary coupling) → **safer** negative (PPI).
+  (e.g. low mutual information / evolutionary coupling) → **safer** negative
+  (PPI) — but be aware this specific premise was tried here (Evolutionary Rate
+  Covariation via RERconverge) and removed: extensive calibration (DRYAD/
+  UPNA-PPI, multiple species-panel widths, multiple sample sizes) never showed
+  a reliable signal, and the primary ERC literature itself confirms this isn't
+  a quirk of implementation — ERC is a documented, reliable predictor of
+  *co-functional* relationships (shared pathway/complex) but explicitly
+  **not** of direct *physical* binding (Little, Chikina & Clark 2024, eLife,
+  doi:10.7554/eLife.93333, quote:
+  "the practical application of a tool such as ERC to provide actionable
+  hypotheses for physically interacting domains is not advisable"). Don't
+  re-attempt this exact rule without a genuinely different evolutionary
+  signal — see git history for the full investigation if picking this back up.
 - If a ligand is specific to a lineage that lacks the corresponding protein ortholog
   or conserved binding pocket → **safer** negative (PLI).
 - If a known interaction in one species is not conserved in closely related species
@@ -95,7 +107,6 @@ where they live, and how they are intended to be computed or loaded.
 |------------------------------------|----------|-------------------------------------------------------------------------------------------------------------|
 | `compartments`                    | protein  | Set of GO cellular-component terms, loaded from TSV as in `localization.py` (one node → comma-separated compartments). |
 | `surface_hydrophobicity`          | protein  | Two-tier Kyte-Doolittle score (`scripts/compute_surface_hydrophobicity.py`): Tier 1 aggregates over solvent-exposed (DSSP RSA), ordered (AlphaFold pLDDT) residues when a confident structure exists; Tier 2 falls back to a whole-sequence mean otherwise. See `rules/ppi.yaml`'s `hydrophobicity_interface` for the calibrated (and direction-reversed) threshold. |
-| `evolutionary_coupling_score_with_b` | protein (pairwise) | Evolutionary Rate Covariation between `a` and `b` (`scripts/compute_evolutionary_coupling.py`, RERconverge) — Pearson correlation of their relative-evolutionary-rate vectors across a fixed vertebrate species panel. Genuinely pairwise (loaded via `build_pair_annotation_table()`, not the per-node table); not yet calibrated. |
 | `string_score_with_b`             | protein  | Score on `a` for its STRING (v12.0, physical subnetwork) `combined_score` with `b`, normalized to `[0,1]` (raw score ÷ 1000). STRING's own reporting cutoff is 0.15 — it doesn't return pairs below that by default. |
 | `interface_conservation`          | protein  | Mean conservation over interface residues, derived from MSAs (Consurf/entropy) plus interface annotation (structure/docking/prediction). |
 | `degree`                          | protein  | Graph degree of the protein node in the PPI / heterogeneous network.                                       |
@@ -139,45 +150,6 @@ Additional fields you **plan** to use and how to compute them:
     its much lower structure-only pair coverage — no sequence fallback exists
     for a spatial-patch method). See the calibration script's docstring for
     the full three-way comparison.
-
-- `a.evolutionary_coupling_score_with_b` — **implemented, not yet calibrated**.
-  EVcouplings/EVcomplex (residue-level direct-coupling analysis) was evaluated
-  and rejected: its binaries do install, but real use needs a large jackhmmer
-  reference database and per-pair species-matched ortholog alignments with
-  strict quality gating — hours of compute per family and a high abstention
-  rate, not viable at PPI-benchmark calibration scale. Implemented instead:
-  **Evolutionary Rate Covariation (ERC)** — Clark & Aquadro (2010); the same
-  method behind the mitonuclear-coevolution literature (Zhang et al. 2015,
-  Weng et al. 2016, Forsythe et al. 2021) — via **RERconverge**
-  (github.com/nclark-lab/RERconverge), a real, actively-maintained R package.
-  Pipeline: `scripts/fetch_orthologs.py` (Ensembl REST homology, a fixed
-  16-species vertebrate panel) → `scripts/build_gene_alignments.py` (MAFFT) →
-  `scripts/estimate_phangorn_trees.R` (branch-length ML fitting on a **fixed**
-  master topology, `scripts/data/vertebrate_master_tree.nwk` — RERconverge's
-  own recommended method at this scale; a free per-gene topology search, e.g.
-  FastTree, disagrees with the master tree far too often at ~16 taxa and gets
-  discarded as "discordant") → `scripts/rerconverge_runner.R`
-  (readTrees/getAllResiduals) → `scripts/compute_evolutionary_coupling.py`
-  (Pearson correlation between the two genes' relative-evolutionary-rate
-  vectors, gated at `MIN_SHARED_BRANCHES` — a correlation over too few shared
-  branches is noise, not signal, so the pair simply abstains rather than
-  getting a low-confidence number).
-  **Unlike every other field so far, this one is genuinely pairwise** (A's
-  coupling *with B specifically*, not a property of A alone) — it's loaded via
-  `build_pair_annotation_table()` (`negaverse/io/annotations.py`), a second
-  mechanism alongside the per-node `build_annotation_table()`, reading
-  `node_a<TAB>node_b<TAB>value` files and merged onto the right entity's
-  record per-pair at score time (`streams/rules.py::_RuleFilterBase`) — see
-  that module for why a naive per-node cache can't represent this correctly.
-  **Scope**: the species panel and master tree are vertebrate-specific
-  (matching this project's human PPI calibration benchmarks); bacterial or
-  viral query proteins simply have no Ensembl vertebrate gene mapping and
-  abstain gracefully, rather than producing a meaningless score.
-  `scripts/calibrate_evolutionary_coupling_threshold.py` (same
-  subsample/Youden's-J/protein-disjoint methodology as
-  `hydrophobicity_interface`) is written and runs end-to-end, but the
-  real calibration run hasn't been performed yet — `evolutionary_coupling_absence`'s
-  threshold in `rules/ppi.yaml` is still the pre-calibration placeholder.
 
 - `a.interface_conservation`  
   - Compute residue-level conservation (e.g. via Consurf, PSI-BLAST + entropy)
