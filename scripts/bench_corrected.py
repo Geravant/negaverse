@@ -376,6 +376,8 @@ def main():
     ap.add_argument("--inject-k", type=int, default=1000)
     ap.add_argument("--psm", action="store_true",
                     help="propensity-score-matched negatives (clean-pool degree match); sweep hardness cap")
+    ap.add_argument("--eval-match", action="store_true",
+                    help="degree-match negatives to a HELD-OUT fold of the gold negatives (eval population)")
     args = ap.parse_args()
 
     global _RULES
@@ -389,6 +391,10 @@ def main():
         for r in _RULES:
             spec[f"stacked[-{r.id}]"] = [x for x in all_ids if x != r.id]
         spec["stacked[NO rules]"] = []
+    elif args.eval_match:
+        spec = {"random_veto": "builtin", "topology_safe": "builtin", "stacked": "builtin",
+                "psm_to_positives": ("psm", 0.7), "eval_matched": ("evalmatch",),
+                "eval_matched_clean": ("evalmatch_clean", 0.7)}
     elif args.psm:
         spec = {"random_veto": "builtin", "topology_safe": "builtin", "stacked": "builtin",
                 "counterfactual (cap=1.0)": ("cf",)}
@@ -442,6 +448,14 @@ def main():
         test_excl = {frozenset(p) for p in test_pos}
         gold_s = [p for p in gold if frozenset(p) not in full_pos_set]
         rng.shuffle(gold_s)
+        # eval-match: split gold into a MATCH fold (target distribution) and a disjoint TEST fold
+        gold_eval = gold_s
+        match_degsums = []
+        if args.eval_match:
+            h = len(gold_s) // 2
+            match_gold, gold_eval = gold_s[:h], gold_s[h:]
+            _dgm = dict(nx.Graph(tr_pos).degree())
+            match_degsums = [_dgm.get(u, 0) + _dgm.get(v, 0) for (u, v) in match_gold]
         pool = _score_pool(tr_pos, args.max_pool, seed, full_pos_set, exclude=test_excl)
         n_neg = int(len(tr_pos))                                  # one negative per training positive
         _dg = dict(nx.Graph(tr_pos).degree())
@@ -458,13 +472,20 @@ def main():
                 neg = _select_counterfactual(pool, pos_degsums, n_neg, np.random.default_rng(seed))
             elif isinstance(sp, tuple) and sp[0] == "psm":
                 neg = _select_psm(pool, pos_degsums, n_neg, np.random.default_rng(seed), sp[1])
+            elif isinstance(sp, tuple) and sp[0] in ("evalmatch", "evalmatch_clean"):
+                # resample the held-out gold-negative degree distribution up to n_neg targets
+                _r = np.random.default_rng(seed)
+                targets = list(_r.choice(match_degsums, size=n_neg)) if match_degsums else []
+                clean = ([r for r in pool if not r["vetoed"]] if sp[0] == "evalmatch"
+                         else [r for r in pool if not r["vetoed"] and r["hardness"] <= sp[1]])
+                neg = _degree_match(clean, targets, n_neg, _r)
             else:
                 neg = _select_stacked_subset(pool, n_neg, sp)
             if not neg:
                 continue
             dirty = sum(1 for u, v in neg if frozenset((u, v)) in full_pos_set)
             purity[arm].append(dirty)
-            per_model = _evaluate(tr_pos, test_pos, neg, nodes, gold_s, seed, args.models)
+            per_model = _evaluate(tr_pos, test_pos, neg, nodes, gold_eval, seed, args.models)
             for m, res in per_model.items():
                 for k, val in res.items():
                     if k in metrics[(arm, m)]:
