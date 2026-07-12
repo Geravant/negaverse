@@ -120,6 +120,9 @@ def main():
     ap.add_argument("--space", choices=list(SPACES), required=True)
     ap.add_argument("--neg-arm", choices=["verified", "stacked"], default="verified")
     ap.add_argument("--top-k", type=int, default=50)
+    ap.add_argument("--max-per-protein", type=int, default=3,
+                    help="hub-diversity cap: max times any protein may appear in the "
+                         "shortlist (an inductive model over-scores sticky hubs; 0 = no cap)")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
@@ -147,22 +150,42 @@ def main():
     p = clf.predict_proba(X)[:, 1]
     order = np.argsort(-p)
 
+    # An inductive sequence model over-scores "sticky" hub proteins, so the raw
+    # top-K collapses onto one hub. Greedily pick down the ranking with a
+    # per-protein cap so the shortlist is diverse and useful for AF2 triage.
+    from collections import Counter
+    raw_hub = Counter()
+    for i in order[:args.top_k]:
+        u, v = kept[i]; raw_hub[u] += 1; raw_hub[v] += 1
+    cap, used, picked = args.max_per_protein, Counter(), []
+    for i in order:
+        u, v = kept[i]
+        if cap and (used[u] >= cap or used[v] >= cap):
+            continue
+        picked.append(i); used[u] += 1; used[v] += 1
+        if len(picked) >= args.top_k:
+            break
+
     Path("out/inductive").mkdir(parents=True, exist_ok=True)
     out = Path(f"out/inductive/novel_{args.space}_{args.neg_arm}.tsv")
     with out.open("w") as fh:
         hdr = "rank\tprotein_a\tprotein_b\tname_a\tname_b\tp_interact"
         hdr += "\ttdl_a\ttdl_b\n" if args.space == "idg" else "\n"
         fh.write(hdr)
-        for rank, i in enumerate(order[:args.top_k], 1):
+        for rank, i in enumerate(picked, 1):
             u, v = kept[i]
             row = f"{rank}\t{u}\t{v}\t{names.get(u,u)}\t{names.get(v,v)}\t{p[i]:.4f}"
             row += f"\t{extra_meta.get(u,'')}\t{extra_meta.get(v,'')}\n" if args.space == "idg" else "\n"
             fh.write(row)
 
-    print(f"\nscored {len(kept)} novel pairs; wrote top-{args.top_k} → {out}")
-    print(f"  P(interact) range: {p.min():.3f}–{p.max():.3f}, top-{args.top_k} ≥ {np.sort(p)[-args.top_k]:.3f}")
-    print("\n  top 10 (for AF2-Multimer triage):")
-    for rank, i in enumerate(order[:10], 1):
+    top_hub, top_n = (raw_hub.most_common(1)[0] if raw_hub else ("-", 0))
+    print(f"\nscored {len(kept)} novel pairs; wrote diverse top-{len(picked)} "
+          f"(≤{cap}/protein) → {out}")
+    print(f"  P(interact) range: {p.min():.3f}–{p.max():.3f}")
+    print(f"  hub bias: without the cap, {names.get(top_hub,top_hub)} would occupy "
+          f"{top_n}/{args.top_k} of the shortlist — the cap prevents a one-hub list.")
+    print("\n  diversified top 10 (for AF2-Multimer triage):")
+    for rank, i in enumerate(picked[:10], 1):
         u, v = kept[i]
         tag = f"  [{extra_meta.get(u,'')}/{extra_meta.get(v,'')}]" if args.space == "idg" else ""
         print(f"   {rank:>2}. {names.get(u,u)} × {names.get(v,v)}  p={p[i]:.3f}{tag}")
