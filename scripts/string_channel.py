@@ -7,9 +7,12 @@ candidate evolutionary-coupling signal. Kept as shared plumbing (not folded
 into that one script) in case another STRING channel is worth testing later.
 
 Both files are already downloaded, purely local lookups (no network calls):
-  - local-docs/string/9606.protein.aliases.v12.0.txt.gz — UniProt_AC alias
-    type maps each accession to its STRING protein ID (9606.ENSP...).
-    Verified: 88,155 mappings / 19,399 unique STRING proteins for human.
+  - local-docs/string/9606.protein.aliases.v12.0.txt.gz — maps each accession
+    to its STRING protein ID (9606.ENSP...). The `UniProt_AC` alias rows cover
+    UniProt-keyed graphs (DRYAD, SARS); the `Ensembl*` rows carry each gene's
+    `ENSG...` id, so an Ensembl-gene-keyed graph (HuRI) resolves too — see
+    `map_accessions_to_ensp`. Verified: 88,155 UniProt_AC mappings / 19,399
+    unique STRING proteins for human.
   - local-docs/string/9606.protein.links.detailed.v12.0.txt.gz — 13.7M rows
     (both orderings of every pair present), columns: protein1 protein2
     neighborhood fusion cooccurence coexpression experimental database
@@ -36,18 +39,35 @@ LINKS = Path("local-docs/string/9606.protein.links.detailed.v12.0.txt.gz")
 
 def map_accessions_to_ensp(accessions: list[str]) -> dict[str, str]:
     """One STRING ENSP per accession (first alias-file occurrence kept, same
-    single-canonical-ID convention used elsewhere in this project's
-    annotation scripts)."""
+    single-canonical-ID convention used elsewhere in this project's annotation
+    scripts).
+
+    Resolves two id spaces, so the STRING rule can fire on either a
+    UniProt-keyed graph (DRYAD, SARS) or an Ensembl-gene-keyed one (HuRI):
+      * UniProt accessions -> ENSP via the file's ``UniProt_AC`` alias rows.
+      * Ensembl gene ids (``ENSG...``) -> ENSP via its ``Ensembl*`` alias rows.
+        STRING lists a gene's id as an alias on each of that gene's ENSP
+        proteins, so a gene with several protein products resolves to whichever
+        ENSP the file lists first — arbitrary but deterministic, and acceptable
+        for this low-confidence non-interaction signal.
+
+    UniProt matching stays gated on the ``UniProt_AC`` source to avoid
+    cross-database alias collisions; an ``ENSG...`` id is globally unique, so
+    matching one needs no gate beyond "an Ensembl-sourced row.\""""
     wanted = set(accessions)
     out: dict[str, str] = {}
     with gzip.open(ALIASES, "rt") as fh:
         next(fh)  # header
         for line in fh:
             ensp, alias, source = line.rstrip("\n").split("\t")
-            if "UniProt_AC" not in source or alias not in wanted:
+            if alias not in wanted or alias in out:
                 continue
-            if alias not in out:
-                out[alias] = ensp
+            if alias.startswith("ENSG"):
+                if "Ensembl" not in source:
+                    continue
+            elif "UniProt_AC" not in source:
+                continue
+            out[alias] = ensp
     return out
 
 
