@@ -238,7 +238,7 @@ def predict_covid(model, args):
     print("\n" + "=" * 60 + "\nPredict novel COVID host-host PPIs (D-SCRIPT, verified)\n" + "=" * 60)
     hseq = {l.split("\t")[0]: l.split("\t")[1].strip()[:args.max_len]
             for l in open("local-docs/sars/sequences.tsv") if "\t" in l}
-    hosts = [f.split("\t")[0] for f in (l.rstrip("\n").split("\t")
+    hosts = [f[0] for f in (l.rstrip("\n").split("\t")
              for l in open("local-docs/sars/proteins.tsv")) if len(f) >= 2 and f[1] == "host"]
     hosts = [h for h in hosts if h in hseq]
     fa = WORK / "sars_hosts.fasta"
