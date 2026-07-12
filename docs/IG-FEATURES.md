@@ -30,6 +30,7 @@ set. Several features below therefore become two gates, one per product.
 | Log-odds fusion + calibrated stack | Fuse evidence in log-odds coordinates (agreement reinforces); a supervised stack gives a *calibrated* confidence + lower bound | `ig/logodds_fusion.py`, `fusion_mode="logodds"` (opt-in), `scripts/eval_logodds.py` | **Stack is a decisive calibration win** (Brier 0.67→0.05, ECE 0.78→0.02, AUROC 0.86→0.87). **Unsupervised pool alone is worse-calibrated than the mean** — supervision is mandatory. LCB correct but negligible at current data density. |
 | Ch5 Determinantal (DPP) selection | Diverse eval/train set curation | `ig/dpp.py` | **Modest on real embeddings; removes the worst near-duplicates.** Saturates at embedding rank — a small-set de-duplicator, not a full-scale selector. |
 | Fisher-information (D-optimal) selection | Pick negatives that constrain distinct downstream-model directions | `ig/fisher.py`, `scripts/eval_fisher.py` | **Measured NEGATIVE result — do not wire.** Highest diversity, but selects 73% of injected hidden positives; downstream AUROC collapses to ~0.26 under RF *and* LGBM. The objective is anti-aligned with safety; a hardness gate barely helps. |
+| Sinkhorn OT nuisance-matching | Multivariate distribution-match negatives to a target (degree × coverage × …) | `scripts/eval_psm_residual.py` (precondition test) | **Not built — precondition fails.** C2ST shows scalar PSM leaves only +0.02–0.03 AUC of residual *multivariate* imbalance; the dominant residual is scalar/structural (safe region lacks hub-degree pairs), which OT cannot fix either. |
 | Ch1 Surprisal vs a frozen cloud | Resemblance to the positive manifold — over graph *and* sequence (ESM2) feature spaces | `ig/surprisal.py`, `scripts/eval_esm2_manifold.py` | **Gold-cloud = null (0.47). Graph manifold real (0.88). ESM2 sequence manifold is the *independent* axis (corr ~0.2) → 3-way fusion 0.81→0.88.** |
 | Ch7 Geometric routing (relative margin) | Margin between positive-like and negative-like clouds, not an absolute cutoff | `ig/margin.py` | Component of C's relative-margin score (0.95). |
 | Ch6 Recurrence / Hawkes | Corroboration: confidence = independent streams that echo the verdict | (design; uses `stream_disagreement`) | Precondition (stream independence) holds in negaverse. |
@@ -417,3 +418,57 @@ actually acquired — but it is **not** a negative-selection gate. The lesson al
 narrows the search: the winning selection ideas here match a *nuisance
 distribution* under a safety gate (stacked, PSM, and next, Sinkhorn), they do not
 maximise an unconstrained information objective.
+
+---
+
+## Sinkhorn OT nuisance-matching — precondition failed, not built
+
+**Idea.** Entropic optimal transport (Cuturi 2013) to select a batch whose
+*multivariate* nuisance distribution (degree × isolate-status × coverage × family
+× …) matches a target, rewarding safety and controlled hardness. It would
+generalise the shipped scalar PSM (which degree-**sum**-matches negatives to
+positives) to joint multivariate matching.
+
+**Precondition test before building** (`scripts/eval_psm_residual.py`, HuRI, C2ST
+= classifier two-sample AUC between PSM-negatives and positives; 0.5 = matched):
+
+| covariate set the classifier sees | C2ST AUC |
+|---|---|
+| scalar degree-sum (the matched covariate) | ~0.52–0.59 |
+| joint endpoint degree (min, max) | ~0.55–0.61 |
+| + clustering coefficient | ~0.54–0.61 |
+| **multivariate gain over scalar** | **+0.02 to +0.03** |
+
+**Verdict: do not build it.** Sinkhorn's whole value over scalar PSM is closing
+*residual multivariate* imbalance — and there is barely any (+0.02–0.03 AUC).
+Worse, the imbalance that *does* remain shows up already on the scalar covariate
+PSM matches on: the safe (hardness-capped) region structurally lacks the
+hub-degree pairs the positives are full of, so *no* matcher — scalar or
+multivariate — can close it without breaking the safety gate. Entropic OT would
+add real machinery (Sinkhorn iterations + a fractional-plan-to-discrete-batch
+rounding step) to move a benchmark by a rounding error. If a future modality
+exposes nuisance covariates that are genuinely *joint* (e.g. sequence coverage ⟂
+degree) and the C2ST gain clears ~0.05, revisit — the harness is here to re-test.
+
+---
+
+## Where the selection arc landed
+
+Evaluating the three information-geometry *selection* ideas end-to-end changed the
+plan more than implementing them did:
+
+* **Log-odds fusion + calibrated stack — shipped.** The one clear win: a
+  calibrated confidence + lower bound, wired as a pipeline calibration stage.
+* **DPP — deferred.** Saturates at embedding rank; a small-set de-duplicator, not
+  a full-scale selector, and not needed as Fisher's substrate.
+* **Fisher / D-optimal — measured negative result.** Its information objective is
+  anti-aligned with safety (it selects hidden positives); not wired.
+* **Sinkhorn OT — precondition failed.** No residual multivariate imbalance for it
+  to close; not built.
+
+The through-line: in negative selection the binding constraint is *safety*
+(don't pick hidden positives), and the winning methods match a nuisance
+distribution *under* a safety gate (stacked, PSM). Objectives that maximise
+information or diversity without that gate select exactly the wrong pairs. The
+evaluate-each-step cadence, run against the existing injection backtest, is what
+separated the one real win from two theory-appealing dead ends.
