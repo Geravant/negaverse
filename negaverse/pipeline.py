@@ -44,6 +44,7 @@ class PipelineConfig:
     #      hidden-positive enriched and, on sparse graphs, degenerates into a hub
     #      filter (§10). Kept for ablation, not recommended.
     train_selection: str = "stacked"
+    psm_hardness_cap: float = 0.7          # for train_selection="psm": clean-pool hardness ceiling
     # for train_selection="mixture": (representative, safe, hard) fractions of n_train
     mixture_proportions: tuple = (0.6, 0.3, 0.1)
     weights: dict[str, float] | None = None
@@ -178,7 +179,8 @@ def run_pipeline(
         sub = {**{n: None for n in score_names}, **sub}  # ensure all names present
         conf = _fuse_confidence(sub, cfg.weights, cfg.fusion_mode, cfg.fusion_lam, reported)
         kept.append(Scored(u=u, v=v, confidence=conf, conf_evidence=reported,
-                           hardness=round(float(pct[i]), 4), sub_scores=sub))
+                           hardness=round(float(pct[i]), 4), sub_scores=sub,
+                           degsum=graph.degree(u) + graph.degree(v)))
 
     # Layer 5 — two products from the same pool. Match the eval set on a per-node
     # confounder statistic — graph degree by default (the PPI leakage confounder),
@@ -195,8 +197,10 @@ def run_pipeline(
     mw = np.array([_match_weight(s) for s in kept], dtype=float)
     eval_set = degree_matched_eval(kept, mw, cfg.n_eval, seed=cfg.seed)
     eval_keys = {(s.u, s.v) for s in eval_set}
+    pos_degsums = [graph.degree(a) + graph.degree(b) for (a, b) in graph.g.edges()]
     train_set = select_train(kept, cfg.n_train, exclude=eval_keys, mode=cfg.train_selection,
-                             proportions=cfg.mixture_proportions, seed=cfg.seed)
+                             proportions=cfg.mixture_proportions, seed=cfg.seed,
+                             pos_degsums=pos_degsums, psm_cap=cfg.psm_hardness_cap)
 
     # signal disagreement: two independent streams conflicting is worth the
     # expensive review even when the fused confidence looks unremarkable — an

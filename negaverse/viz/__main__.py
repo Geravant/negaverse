@@ -102,22 +102,26 @@ def main(argv=None) -> None:
     ap.add_argument("--out", default="out")
     ap.add_argument("--n-train", type=int, default=400)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--train-selection", default="stacked",
+                    choices=["hard", "safe", "stacked", "mixture", "psm"],
+                    help="how the emitted training negatives are chosen (default stacked)")
     args = ap.parse_args(argv)
+    ts = args.train_selection
 
     if args.dataset == "huri":
         graph = load_huri_graph()
         cfg = PipelineConfig(modality="ppi", n_eval=args.n_train, n_train=args.n_train,
-                             max_pool=40_000, seed=args.seed,
+                             max_pool=40_000, seed=args.seed, train_selection=ts,
                              filters=["known_positive_veto", "structured", "topology"])
     elif args.dataset == "dryad":
         graph = _load_dryad_graph()
         cfg = PipelineConfig(modality="ppi", n_eval=args.n_train, n_train=args.n_train,
-                             max_pool=40_000, seed=args.seed,
+                             max_pool=40_000, seed=args.seed, train_selection=ts,
                              filters=["known_positive_veto", "structured", "topology"])
     else:
         graph = load_sars_cov2_graph()
         cfg = PipelineConfig(n_eval=args.n_train, n_train=args.n_train, seed=args.seed,
-                             match_on_type="viral",
+                             match_on_type="viral", train_selection=ts,
                              filters=["known_positive_veto", "structured", "topology"])
 
     print(f"graph: {graph.summary()}")
