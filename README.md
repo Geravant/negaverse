@@ -75,6 +75,7 @@ Naive hard mining grabs ~3 of every 4 hidden positives; negaverse lets ~0 throug
 random downstream** and is the **cleanest** (zero leakage) — across 2 datasets and 2 learners.
 
 → **Full evidence, all flags, and every command on one page: [`docs/EVALUATION.md`](docs/EVALUATION.md).**
+→ **Interactive showcase (open in a browser): [`docs/showcase.html`](docs/showcase.html)** — rotate the 3D maps, hover any risky pair for the LLM verdict. Self-contained; rebuild with `python3 scripts/build_showcase.py`.
 
 ---
 
