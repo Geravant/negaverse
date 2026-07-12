@@ -29,9 +29,23 @@ from pathlib import Path
 import numpy as np
 from sklearn.metrics import roc_auc_score
 
+from itertools import combinations
+
 from negaverse.io import load_huri_graph, load_negatome_in_ensembl_space
 
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")   # MPS launcher inherits this
+
+# sequence-only disorder (TOP-IDP, Campen 2008) — screen the disordered/sticky-hub
+# pairs before predicting (same guard as the RF pipeline; SARS hosts are 60% disordered).
+_TOP_IDP = {"A": 0.06, "R": 0.180, "N": 0.007, "D": 0.192, "C": 0.02, "Q": 0.318,
+            "E": 0.736, "G": 0.166, "H": 0.303, "I": -0.486, "L": -0.326, "K": 0.586,
+            "M": -0.397, "F": -0.697, "P": 0.987, "S": 0.341, "T": 0.059, "W": -0.884,
+            "Y": -0.510, "V": -0.121}
+
+
+def _seq_disorder(s):
+    v = [_TOP_IDP.get(c, 0.0) for c in s]
+    return sum(v) / len(v) if v else 0.0
 DSCRIPT = ".venv-dscript/bin/dscript"
 # train on Apple Metal via the launcher (scripts/dscript_mps.py routes .cuda()->mps);
 # device "0" makes D-SCRIPT's use_cuda true. embed already done; predict runs on cpu.
@@ -97,6 +111,9 @@ def main():
     ap.add_argument("--max-len", type=int, default=500)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--regimes", nargs="+", default=["protein_disjoint", "in_distribution"])
+    ap.add_argument("--predict-covid", action="store_true",
+                    help="after training, use the verified model to predict novel COVID host-host PPIs")
+    ap.add_argument("--covid-cap", type=int, default=8000, help="max host-host pairs to score")
     args = ap.parse_args()
     WORK.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(args.seed)
@@ -203,6 +220,64 @@ def main():
     WORK.joinpath("dscript_results.json").write_text(
         json.dumps({f"{r}|{a}": results[(r, a)] for (r, a) in results}, indent=2))
     print("\nwrote out/dscript/dscript_results.json")
+
+    if args.predict_covid:
+        model = str(WORK / f"{args.regimes[0]}_verified_model_final.sav")
+        if Path(model).exists():
+            predict_covid(model, args)
+        else:
+            print(f"  (skip COVID predict: no verified model at {model})")
+
+
+def predict_covid(model, args):
+    """Use the trained VERIFIED D-SCRIPT model to predict novel COVID host-host PPIs
+    (Lucy 12.07). Embed the host proteins, score all admissible host×host pairs,
+    subtract documented (IntAct/BioGRID + the SARS graph edges) + disorder-risky."""
+    from negaverse.io import load_sars_cov2_graph
+    from negaverse.io.sources import load_positive_sources
+    print("\n" + "=" * 60 + "\nPredict novel COVID host-host PPIs (D-SCRIPT, verified)\n" + "=" * 60)
+    hseq = {l.split("\t")[0]: l.split("\t")[1].strip()[:args.max_len]
+            for l in open("local-docs/sars/sequences.tsv") if "\t" in l}
+    hosts = [f.split("\t")[0] for f in (l.rstrip("\n").split("\t")
+             for l in open("local-docs/sars/proteins.tsv")) if len(f) >= 2 and f[1] == "host"]
+    hosts = [h for h in hosts if h in hseq]
+    fa = WORK / "sars_hosts.fasta"
+    with fa.open("w") as fh:
+        for h in hosts:
+            fh.write(f">{h}\n{hseq[h]}\n")
+    hemb = str(WORK / "sars_hosts.h5")
+    if not Path(hemb).exists():
+        _run([DSCRIPT, "embed", "--seqs", str(fa), "-o", hemb, "-d", DEV])
+    sg = load_sars_cov2_graph()
+    known = {frozenset(e) for e in sg.g.edges()}
+    src, _ = load_positive_sources("rules/sources.yaml", restrict_to=set(hosts))
+    known |= set(src)
+    sd = {h: _seq_disorder(hseq[h]) for h in hosts}
+    cand = [(u, v) for u, v in combinations(hosts, 2)
+            if frozenset((u, v)) not in known and max(sd[u], sd[v]) <= 0.161][:args.covid_cap]
+    print(f"  {len(hosts)} hosts → {len(cand)} novel, ordered, undocumented host-host pairs "
+          f"(capped {args.covid_cap})")
+    _write_pairs(WORK / "covid_topred.tsv", cand, [0] * len(cand))
+    out = WORK / "covid_pred.tsv"
+    _run([DSCRIPT, "predict", "--pairs", str(WORK / "covid_topred.tsv"), "--model", model,
+          "--embeddings", hemb, "-d", "cpu", "--outfile", str(out)])
+    scored = []
+    for line in open(str(out) + ".tsv"):
+        p = line.rstrip("\n").split("\t")
+        if len(p) >= 3:
+            try:
+                scored.append((float(p[2]), p[0], p[1]))
+            except ValueError:
+                pass
+    scored.sort(reverse=True)
+    res = WORK / "covid_hosthost_novel.tsv"
+    with res.open("w") as fh:
+        fh.write("rank\tprotein_a\tprotein_b\td_script_score\n")
+        for i, (sc, a, b) in enumerate(scored[:200], 1):
+            fh.write(f"{i}\t{a}\t{b}\t{sc:.4f}\n")
+    print(f"  wrote top-200 novel COVID host-host predictions → {res}")
+    for sc, a, b in scored[:10]:
+        print(f"    {a} × {b}  D-SCRIPT={sc:.3f}")
 
 
 if __name__ == "__main__":
