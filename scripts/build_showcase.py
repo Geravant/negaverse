@@ -53,5 +53,7 @@ if missing:
                 else "python -m negaverse.cli --out out/sars")
         print(f"  {m}   → generate with: {hint}")
 
-out = build_showcase("out/showcase.html", maps)
+# docs/showcase.html is the committed, tracked copy (fully self-contained: Plotly
+# and all chart data are inlined, so it's the only file needed to present it).
+out = build_showcase("docs/showcase.html", maps)
 print("wrote", out)
