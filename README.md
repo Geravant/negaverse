@@ -61,6 +61,23 @@ Every pair that comes out carries its scores, flags, and a plain reason — noth
 
 ---
 
+## Does it actually work? (the one-number proof)
+
+We hid **1,000 real interactions** in the candidate pool and measured what fraction each strategy
+**wrongly labels "negative"** — the exact mistake that poisons training data:
+
+| strategy | HuRI | DRYAD |
+|---|---:|---:|
+| naive hard-negative mining (the common default) | **74.6 %** | **64.3 %** |
+| **negaverse default (`stacked`)** | **0.6 %** | **0.0 %** |
+
+Naive hard mining grabs ~3 of every 4 hidden positives; negaverse lets ~0 through. It also **beats
+random downstream** and is the **cleanest** (zero leakage) — across 2 datasets and 2 learners.
+
+→ **Full evidence, all flags, and every command on one page: [`docs/EVALUATION.md`](docs/EVALUATION.md).**
+
+---
+
 ## Quick start
 
 ```bash
@@ -99,7 +116,9 @@ The SARS-CoV-2 demo interactome (`Network_Table.xlsx`, Gordon et al. 2020) goes 
 python -m negaverse.cli --no-literature        # skip the AI review
 python -m negaverse.cli --judge-remaining --out out   # judge any risky pairs a prior run left over
 python -m negaverse.viz --dataset huri         # charts on the human dataset
-python -m negaverse.bench --gold-test-neg --features spectral   # the fair benchmark
+python -m negaverse.viz --dataset huri --train-selection stacked   # how negatives are chosen (default: stacked)
+python -m negaverse.bench --gold-test-neg --features spectral      # the fair benchmark
+python scripts/bench_corrected.py --dataset huri --injection-test --inject-k 1000   # the proof above
 python scripts/build_known_positive_sources.py # build the BioGRID + IntAct known-interaction screens
 python scripts/validate_rules.py               # check the biology rules parse
 ```
@@ -141,4 +160,4 @@ local-docs/    downloaded datasets (never committed)
 tests/         checks that everything still works
 ```
 
-More depth: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · [`docs/BENCHMARK-FINDINGS.md`](docs/BENCHMARK-FINDINGS.md) · [`docs/ADDING-A-FILTER.md`](docs/ADDING-A-FILTER.md) · [`rules/AUTHORING.md`](rules/AUTHORING.md)
+More depth: **[`docs/EVALUATION.md`](docs/EVALUATION.md)** (jury one-pager: results + all flags) · [`docs/FILTER-EFFECTIVENESS.md`](docs/FILTER-EFFECTIVENESS.md) (full methodology) · [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · [`docs/ADDING-A-FILTER.md`](docs/ADDING-A-FILTER.md) · [`rules/AUTHORING.md`](rules/AUTHORING.md)

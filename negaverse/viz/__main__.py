@@ -10,13 +10,54 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 from ..graph import TypedInteractionGraph
 from ..pipeline import PipelineConfig, run_pipeline
+from ..streams import build_filters, LiteratureFilter
 from .. import eval as ev
 from ..io import load_sars_cov2_graph, load_huri_graph
 from . import render_all, build_report
+
+_MAP_DIR = Path("local-docs/mappings")
+
+
+def _load_dotenv(path: str | Path = ".env") -> None:
+    """Best-effort .env loader (stdlib) so ANTHROPIC/OPENROUTER keys are picked up."""
+    p = Path(path)
+    if not p.exists():
+        return
+    for line in p.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, _, v = line.partition("=")
+            os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+
+
+def _load_names(dataset: str) -> dict:
+    """id -> human-readable gene symbol so the literature judge can reason.
+    HuRI nodes are ENSG ids; DRYAD nodes are UniProt accessions (mapped via ENSG)."""
+    ensg_sym = {}
+    f = _MAP_DIR / "ensg_symbol.tsv"
+    if f.exists():
+        for line in f.read_text().splitlines():
+            if "\t" in line and not line.startswith("#"):
+                e, s = line.split("\t")[:2]
+                ensg_sym[e.strip()] = s.strip()
+    if dataset == "huri":
+        return ensg_sym
+    if dataset == "dryad":                       # UniProt -> (first) ENSG -> symbol
+        names, up = {}, _MAP_DIR / "uniprot_ensg_human.tsv"
+        if up.exists():
+            for line in up.read_text().splitlines():
+                if "\t" in line and not line.startswith("#"):
+                    acc, ensgs = line.split("\t")[:2]
+                    sym = ensg_sym.get(ensgs.split(",")[0].strip())
+                    if sym:
+                        names[acc.strip()] = sym
+        return names
+    return {}
 
 _DRYAD_TSV = "local-docs/dryad-ppi/benchmarks/benchmarks/positives_and_negatives.tsv"
 _DRYAD_ESM2_NPZ = "local-docs/dryad-ppi/esm2_t6_emb.npz"
@@ -105,27 +146,46 @@ def main(argv=None) -> None:
     ap.add_argument("--train-selection", default="stacked",
                     choices=["hard", "safe", "stacked", "mixture", "psm"],
                     help="how the emitted training negatives are chosen (default stacked)")
+    ap.add_argument("--no-literature", action="store_true",
+                    help="skip the LLM literature review of risky pairs (on by default when a key is present)")
+    ap.add_argument("--votes", type=int, default=3,
+                    help="best-of-N majority vote per pair in the literature review")
+    ap.add_argument("--literature-k", type=int, default=60,
+                    help="max risky pairs sent to the LLM (bounds cost)")
     args = ap.parse_args(argv)
     ts = args.train_selection
+    _load_dotenv()
 
+    _names = ["known_positive_veto", "structured", "topology"]
     if args.dataset == "huri":
         graph = load_huri_graph()
         cfg = PipelineConfig(modality="ppi", n_eval=args.n_train, n_train=args.n_train,
                              max_pool=40_000, seed=args.seed, train_selection=ts,
-                             filters=["known_positive_veto", "structured", "topology"])
+                             filters=_names, gated_max=args.literature_k)
     elif args.dataset == "dryad":
         graph = _load_dryad_graph()
         cfg = PipelineConfig(modality="ppi", n_eval=args.n_train, n_train=args.n_train,
                              max_pool=40_000, seed=args.seed, train_selection=ts,
-                             filters=["known_positive_veto", "structured", "topology"])
+                             filters=_names, gated_max=args.literature_k)
     else:
         graph = load_sars_cov2_graph()
         cfg = PipelineConfig(n_eval=args.n_train, n_train=args.n_train, seed=args.seed,
                              match_on_type="viral", train_selection=ts,
-                             filters=["known_positive_veto", "structured", "topology"])
+                             filters=_names, gated_max=args.literature_k)
+
+    # Build filter instances so we can attach the gated literature reviewer with a
+    # dataset-specific gene-symbol map (so the judge reasons about named genes, not raw ids).
+    filters = build_filters(cfg.modality, _names)
+    has_key = bool(os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("OPENROUTER_API_KEY"))
+    if not args.no_literature and has_key:
+        names = _load_names(args.dataset)
+        filters.append(LiteratureFilter(enabled=True, votes=args.votes, names=names))
+        print(f"literature review: enabled (best-of-{args.votes}, {len(names)} gene symbols mapped)")
+    elif not args.no_literature:
+        print("literature review: skipped (no ANTHROPIC_API_KEY / OPENROUTER_API_KEY)")
 
     print(f"graph: {graph.summary()}")
-    result = run_pipeline(graph, cfg)
+    result = run_pipeline(graph, cfg, filters=filters)
 
     out = Path(args.out); out.mkdir(parents=True, exist_ok=True)
     validation = {

@@ -6,8 +6,10 @@ independent axes so rotating/hovering actually explains the pairs:
   z = chemistry match                 (hydrophobicity similarity)
 
 colour = regime (real / random / our hard / risky), hover = the two protein ids
-+ why the pair is flagged. Plotly is inlined into report.html (portable/offline)
-from a cached copy; first build fetches it once.
++ why the pair is flagged, and — for risky pairs the LLM reviewed — the model's
+verdict and reasoning inline (read straight off the dot, no scrolling to the
+cards section). Plotly is inlined into report.html (portable/offline) from a
+cached copy; first build fetches it once.
 """
 from __future__ import annotations
 
@@ -21,6 +23,15 @@ from ..graph import TypedInteractionGraph
 
 PLOTLY_URL = "https://cdn.plot.ly/plotly-2.35.2.min.js"
 _CACHE = Path("local-docs/.cache/plotly.min.js")
+
+
+def _wrap(text: str, width: int = 64) -> str:
+    """Soft-wrap a rationale into <br>-separated lines for a readable Plotly hover
+    box (Plotly does not wrap long hover strings on its own)."""
+    import textwrap
+    if not text:
+        return ""
+    return "<br>".join(textwrap.wrap(str(text), width=width)) or ""
 
 
 def get_plotly_js() -> str | None:
@@ -74,6 +85,13 @@ def compute_traces(graph: TypedInteractionGraph, records, seed: int = 0,
     if len(edges) > n_ref:
         edges = [edges[i] for i in rng.choice(len(edges), n_ref, replace=False)]
     flagmap = {(r.u, r.v): r.flags for r in records}
+    # LLM literature verdicts (when the gated stream ran) keyed order-invariantly,
+    # so hovering a risky pair reads the model's actual reasoning, not just its flag.
+    verdicts = {}
+    for r in records:
+        g = (getattr(r, "provenance", None) or {}).get("gated", {}).get("literature")
+        if g and g.get("verdict"):
+            verdicts[frozenset((r.u, r.v))] = g
     hard = [(r.u, r.v) for r in records if r.mode == "train" and "suspected_false_negative" not in r.flags]
     risky = [(r.u, r.v) for r in records if "suspected_false_negative" in r.flags]
     rand = _random_nonedges(graph, n_ref, seed)
@@ -122,7 +140,14 @@ def compute_traces(graph: TypedInteractionGraph, records, seed: int = 0,
             xs.append(round(x, 3)); ys.append(round(y, 3)); zs.append(round(z, 3))
             fl = list(flagmap.get((u, v)) or flagmap.get((v, u)) or [])
             note = "; ".join(fl + missing)
-            txt.append(f"{u} × {v}" + (f"<br>{note}" if note else ""))
+            hover = f"<b>{u} × {v}</b>" + (f"<br>{note}" if note else "")
+            g = verdicts.get(frozenset((u, v)))
+            if g:                                    # LLM read this pair — show its verdict
+                agr = g.get("agreement")
+                agr_s = f" · agreement {agr:.0%}" if isinstance(agr, (int, float)) else ""
+                hover += (f"<br>———<br><b>LLM literature verdict: {g['verdict']}</b>{agr_s}"
+                          f"<br>{_wrap(g.get('rationale', ''))}")
+            txt.append(hover)
         traces.append({"type": "scatter3d", "mode": "markers",
                        "name": f"{name} ({len(xs)})",
                        "x": _jitter(xs), "y": _jitter(ys), "z": _jitter(zs),
