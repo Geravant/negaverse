@@ -224,8 +224,10 @@ local-docs/
 negaverse/io/upna_ppi.py
 negaverse/io/dryad_ppi.py
 
-# prototype outputs
+# prototype outputs (one dir per --dataset, so runs don't clobber each other)
 out/
+huri_out/
+dryad_out/
 __pycache__/
 *.egg-info/
 

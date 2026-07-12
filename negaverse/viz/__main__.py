@@ -156,7 +156,7 @@ def main(argv=None) -> None:
     ts = args.train_selection
     _load_dotenv()
 
-    _names = ["known_positive_veto", "structured", "topology"]
+    _names = ["known_positive_veto", "structured", "topology", "rules"]
     if args.dataset == "huri":
         graph = load_huri_graph()
         cfg = PipelineConfig(modality="ppi", n_eval=args.n_train, n_train=args.n_train,
