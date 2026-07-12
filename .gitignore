@@ -234,3 +234,6 @@ __pycache__/
 # ignore local Claude state, but keep the shared project skills under version control
 .claude/*
 !.claude/skills/
+
+# isolated D-SCRIPT venv (large; not for VCS)
+.venv-dscript/
