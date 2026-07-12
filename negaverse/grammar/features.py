@@ -100,3 +100,58 @@ def fingerprint_matrix(rows, rules):
     X = np.array([[proof_fingerprint(r, rules).get(n, 0.0) for n in names] for r in rows],
                  dtype=float)
     return X, names
+
+
+# --- Exp-2: four-state ledger encodings (flat terminals vs compositional grammar) ---
+from .ledger import FALSE, LEDGER_TERMINALS, MISSING, RISK, SAFE, TRUE  # noqa: E402
+
+
+def ledger_flat_features(ledger, terminals=LEDGER_TERMINALS) -> dict:
+    """FLAT expanded terminals: per terminal, one-hot four-state outcome + strength.
+    No composition — the ablation the grammar fingerprint must beat."""
+    d = {t.name: t for t in ledger}
+    f: dict = {}
+    for name, _effect in terminals:
+        t = d.get(name)
+        oc = t.outcome if t else MISSING
+        f[f"{name}:is_true"] = 1.0 if oc == TRUE else 0.0
+        f[f"{name}:is_false"] = 1.0 if oc == FALSE else 0.0
+        f[f"{name}:is_missing"] = 1.0 if oc == MISSING else 0.0
+        f[f"{name}:strength"] = float(t.strength) if t else 0.0
+    return f
+
+
+def ledger_grammar_features(ledger, terminals=LEDGER_TERMINALS) -> dict:
+    """GRAMMAR fingerprint: flat terminals PLUS compositional structure — coverage /
+    missingness by effect, and cross-terminal conjunctions (contradiction, clean-safe)
+    that a linear model cannot form from flat terminals on its own."""
+    f = dict(ledger_flat_features(ledger, terminals))
+    d = {t.name: t for t in ledger}
+    safe = [d[n] for n, e in terminals if e == SAFE and n in d]
+    risk = [d[n] for n, e in terminals if e == RISK and n in d]
+    n_true = lambda ts: sum(1 for t in ts if t.outcome == TRUE)
+    n_res = lambda ts: sum(1 for t in ts if t.outcome in (TRUE, FALSE))
+    n_miss = lambda ts: sum(1 for t in ts if t.outcome == MISSING)
+    f["cov:n_safe_resolved"] = float(n_res(safe))
+    f["cov:n_safe_missing"] = float(n_miss(safe))
+    f["cov:n_risk_resolved"] = float(n_res(risk))
+    f["cov:n_risk_missing"] = float(n_miss(risk))
+    f["cov:frac_resolved"] = (n_res(safe) + n_res(risk)) / max(len(terminals), 1)
+    st, rt = n_true(safe), n_true(risk)
+    f["comp:n_safe_true"] = float(st)
+    f["comp:n_risk_true"] = float(rt)
+    f["comp:contradiction"] = 1.0 if (st > 0 and rt > 0) else 0.0     # safe AND risk both fire
+    safe_str = max((t.strength for t in safe if t.outcome == TRUE), default=0.0)
+    risk_str = max((t.strength for t in risk if t.outcome == TRUE), default=0.0)
+    f["comp:contradiction_strength"] = safe_str * risk_str
+    # clean-safe: safe evidence fired AND relational risk was resolved-FALSE (not missing)
+    f["comp:clean_safe"] = 1.0 if (st > 0 and rt == 0 and n_res(risk) > 0) else 0.0
+    return f
+
+
+def ledger_matrix(ledgers, mode="grammar", terminals=LEDGER_TERMINALS):
+    """(X, names) over ledgers. mode='flat' → terminals only; 'grammar' → + composition."""
+    enc = ledger_grammar_features if mode == "grammar" else ledger_flat_features
+    names = list(enc([], terminals).keys())
+    X = np.array([[enc(lg, terminals).get(n, 0.0) for n in names] for lg in ledgers], dtype=float)
+    return X, names

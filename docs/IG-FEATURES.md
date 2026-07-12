@@ -31,7 +31,8 @@ set. Several features below therefore become two gates, one per product.
 | Ch5 Determinantal (DPP) selection | Diverse eval/train set curation | `ig/dpp.py` | **Modest on real embeddings; removes the worst near-duplicates.** Saturates at embedding rank — a small-set de-duplicator, not a full-scale selector. |
 | Fisher-information (D-optimal) selection | Pick negatives that constrain distinct downstream-model directions | `ig/fisher.py`, `scripts/eval_fisher.py` | **Measured NEGATIVE result — do not wire.** Highest diversity, but selects 73% of injected hidden positives; downstream AUROC collapses to ~0.26 under RF *and* LGBM. The objective is anti-aligned with safety; a hardness gate barely helps. |
 | Sinkhorn OT nuisance-matching | Multivariate distribution-match negatives to a target (degree × coverage × …) | `scripts/eval_psm_residual.py` (precondition test) | **Not built — precondition fails.** C2ST shows scalar PSM leaves only +0.02–0.03 AUC of residual *multivariate* imbalance; the dominant residual is scalar/structural (safe region lacks hub-degree pairs), which OT cannot fix either. |
-| Sparse proof fingerprint (grammar exp-1) | Branch-separated evidence (safe/risk/coverage/contradiction) as a safety model | `negaverse/grammar/features.py`, `scripts/eval_grammar.py` | **Idea confirmed, structure not yet earning its keep.** Beats the fused mean decisively (Brier 0.67→0.01, injection-FN 6.3%→0%) but ties the raw-signals+LGBM ablation — the win is "classifier + don't average", not proof structure. Gate on a richer evidence vocabulary before Fisher whitening. |
+| Sparse proof fingerprint (grammar exp-1) | Branch-separated evidence (safe/risk/coverage/contradiction) as a safety model | `negaverse/grammar/features.py`, `scripts/eval_grammar.py` | **Idea confirmed, structure not yet earning its keep.** Beats the fused mean decisively (Brier 0.67→0.01, injection-FN 6.3%→0%) but ties the raw-signals+LGBM ablation — the win is "classifier + don't average", not proof structure. |
+| Four-state ledger + relational productions (grammar exp-2) | FALSE≠MISSING terminals + L3 / common-neighbour risk; compositional grammar vs flat | `negaverse/grammar/ledger.py`, `scripts/eval_grammar.py --exp2` | **Compositional grammar does NOT beat flat four-state terminals** (AUROC 0.815 vs 0.810, protein-disjoint 0.863 vs 0.846, risk–coverage tied). Fisher whitening NOT justified — stop. Also: discrete relational productions leak MORE hard (sparse) hidden positives than the continuous fused score. |
 | Ch1 Surprisal vs a frozen cloud | Resemblance to the positive manifold — over graph *and* sequence (ESM2) feature spaces | `ig/surprisal.py`, `scripts/eval_esm2_manifold.py` | **Gold-cloud = null (0.47). Graph manifold real (0.88). ESM2 sequence manifold is the *independent* axis (corr ~0.2) → 3-way fusion 0.81→0.88.** |
 | Ch7 Geometric routing (relative margin) | Margin between positive-like and negative-like clouds, not an absolute cutoff | `ig/margin.py` | Component of C's relative-margin score (0.95). |
 | Ch6 Recurrence / Hawkes | Corroboration: confidence = independent streams that echo the verdict | (design; uses `stream_disagreement`) | Precondition (stream independence) holds in negaverse. |
@@ -534,3 +535,59 @@ beats raw signals with a real vocabulary is Fisher-whitened grammar (arm 4)
 justified. The `separate safe/risk + calibrate` win itself is already largely
 delivered by the step-1 calibration stack; grammar exp-1's marginal product value
 over that is small today.
+
+---
+
+## Grammar exp-2 — four-state ledger + relational productions (the falsifiable test)
+
+Exp-1's fingerprint conflated "rule FALSE" with "annotation MISSING" and had only
+three correlated safe rules, so it couldn't separate *grammar structure* from
+*classifier > mean*. Exp-2 fixes both, then tests the sharp question: **does
+compositional grammar structure beat flat four-state terminals?**
+
+Built (`negaverse/grammar/ledger.py`): a **four-state evidence ledger** —
+every terminal carries `outcome ∈ {TRUE, FALSE, MISSING, NOT_APPLICABLE}`,
+`effect`, `strength`, `quality`, `source`. Rule terminals are re-evaluated to tell
+FALSE from MISSING; two genuinely **relational risk productions** (`RISK_L3`,
+`RISK_COMMON_NEIGHBOR`) are computed from the training graph. (CORUM `SAME_COMPLEX`
+and a cross-fitted D-SCRIPT `PPI_MODEL` are declared but emit MISSING — that data
+isn't loaded; the vocabulary is extensible without faking absent evidence.)
+
+**Equal-information arms**, HuRI 8k pos × 3 seeds, verified label (gold vs held-out
+edge). Injections are **harder** than Exp-1: held real edges with the *fewest*
+common neighbours (median CN = 0), the sparsest / most negative-looking hidden
+positives — which removes Exp-1's 0%-leakage ceiling. `leak@c` = fraction of those
+injected positives that pass the threshold retaining the top `c` of candidates.
+
+| arm | AUROC | AUPRC | Brier | ECE | protein-disjoint | leak@90 | leak@70 | leak@50 |
+|---|---|---|---|---|---|---|---|---|
+| fused (mean) | 0.858 | 0.400 | 0.666 | 0.776 | — | **46.8** | **25.1** | **14.8** |
+| flat terminals + LGBM | 0.810 | 0.198 | 0.058 | 0.002 | 0.846 | 76.4 | 70.7 | 49.4 |
+| grammar + LR | 0.815 | 0.199 | 0.058 | 0.003 | **0.863** | 74.2 | 68.3 | 51.2 |
+| grammar + LGBM | 0.811 | 0.198 | 0.058 | 0.002 | 0.846 | 74.9 | 69.3 | 49.4 |
+
+**Verdict — the grammar hypothesis does not clear its own bar; stop before Fisher.**
+1. **Grammar ties flat.** grammar (0.811–0.815 AUROC, 0.846–0.863 protein-disjoint)
+   is statistically indistinguishable from flat four-state terminals; the
+   risk–coverage curves overlap. Per the pre-registered rule — *grammar earns the
+   Fisher stage only if it beats the flat-terminal model, not merely the fused
+   mean* — **Fisher-whitened grammar and a neural grammar are not justified.** The
+   one mild note: grammar+LR matches flat+LGBM, i.e. explicit compositional
+   features let a *linear* model reach tree-level accuracy — an interpretability
+   win, not a performance one.
+2. **Discretisation loses the safety-critical signal.** On the hardest (sparse)
+   injections every ledger arm leaks far MORE than the continuous fused mean
+   (≈75% vs 47% at 90% coverage). The sparse hidden positives have `RISK_L3` /
+   `RISK_COMMON_NEIGHBOR` ≈ FALSE, so the discrete relational productions call them
+   safe; the fused score's *continuous* topology risk still assigns them enough
+   risk to catch more. (The ledger arms also omit that continuous topology scalar,
+   which compounds it.) The lesson is the opposite of "add grammar": keep the
+   graded topology signal continuous — it is what guards the sparse-positive tail.
+
+Net for the learned-grammar arc: a richer vocabulary was built and tested
+honestly, and compositional structure still does not beat flat features. The
+four-state ledger is a genuine representational improvement (it is now impossible
+to learn annotation-availability as if it were biology) and is kept as
+infrastructure, but the grammar does not earn Fisher geometry on this data. Revisit
+only if a vocabulary with real *joint* structure (CORUM complexes, a cross-fitted
+sequence PPI model) becomes available — the harness (`--exp2`) is here to re-test.

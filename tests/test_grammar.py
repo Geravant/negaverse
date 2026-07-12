@@ -52,3 +52,46 @@ def test_matrix_shape_and_stable_order():
     assert cols == names
     assert X.shape == (2, len(names))
     assert not np.isnan(X).any()
+
+
+def test_ledger_distinguishes_false_from_missing():
+    """The four-state upgrade: a rule with annotations present but condition unmet is
+    FALSE; a rule whose annotation is absent is MISSING — never conflated."""
+    from negaverse.graph import TypedInteractionGraph
+    from negaverse.grammar.ledger import LedgerScorer, TRUE, FALSE, MISSING
+    from negaverse.rule_engine import Rule
+
+    # one rule keyed on a 'compartments' field; fire when compartments are disjoint
+    rule = Rule(id="loc_test", modality="ppi", applies_to=("protein", "protein"),
+                when="disjoint(a.compartments, b.compartments)", effect="safer_negative",
+                weight=0.7, rationale="", source="test").compile()
+    g = TypedInteractionGraph.from_edges(
+        [("a", "x"), ("b", "x")], {n: "protein" for n in ("a", "b", "x")},
+        admissible_types=[("protein", "protein")], name="t")
+    ann = {"a": {"compartments": {"nucleus"}}, "b": {"compartments": {"cytosol"}},
+           "x": {"compartments": {"nucleus"}}}                     # 'm' has NO compartments
+    sc = LedgerScorer(rules=[rule], annotations=ann, pair_annotations={}).fit(g)
+
+    def outcome(u, v, name):
+        return next(t.outcome for t in sc.ledger(g, u, v) if t.name == name)
+
+    assert outcome("a", "b", "loc_test") == TRUE                   # disjoint compartments
+    assert outcome("a", "x", "loc_test") == FALSE                  # both present, overlap → not fired
+    # a node with no compartments annotation → MISSING, not FALSE
+    g2 = TypedInteractionGraph.from_edges(
+        [("a", "b"), ("m", "b")], {n: "protein" for n in ("a", "b", "m")},
+        admissible_types=[("protein", "protein")], name="t2")
+    sc2 = LedgerScorer(rules=[rule], annotations={"a": {"compartments": {"nucleus"}}},
+                       pair_annotations={}).fit(g2)
+    assert next(t.outcome for t in sc2.ledger(g2, "a", "m") if t.name == "loc_test") == MISSING
+
+
+def test_ledger_encodings_grammar_superset_of_flat():
+    from negaverse.grammar.ledger import Terminal, TRUE, FALSE, RISK, SAFE
+    from negaverse.grammar.features import ledger_flat_features, ledger_grammar_features
+    lg = [Terminal("colocalization_mismatch", TRUE, SAFE, 0.7),
+          Terminal("RISK_L3", TRUE, RISK, 0.9)]
+    flat, gram = ledger_flat_features(lg), ledger_grammar_features(lg)
+    assert set(flat).issubset(set(gram))                          # grammar adds columns
+    assert gram["comp:contradiction"] == 1.0                      # safe TRUE and risk TRUE
+    assert gram["comp:n_safe_true"] == 1.0 and gram["comp:n_risk_true"] == 1.0

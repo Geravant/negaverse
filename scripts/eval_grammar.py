@@ -30,7 +30,9 @@ from sklearn.model_selection import StratifiedKFold
 
 import scripts.bench_corrected as bench
 from scripts.bench_corrected import _conf, _load_dataset, _score_pool
-from negaverse.grammar.features import fingerprint_matrix
+from negaverse.graph import TypedInteractionGraph
+from negaverse.grammar.features import fingerprint_matrix, ledger_matrix
+from negaverse.grammar.ledger import LedgerScorer
 from negaverse.rule_engine import load_rules
 
 
@@ -89,6 +91,132 @@ def _protein_disjoint_auroc(X, y, keys, seed, model_fn, folds=5):
     return float(np.mean(aucs)) if aucs else float("nan")
 
 
+def _cn(g, u, v):
+    if not (g.has_node(u) and g.has_node(v)):
+        return 0
+    return len(set(g.neighbors(u)) & set(g.neighbors(v)))
+
+
+def _leak_at_coverage(p_cand, p_inj, cov):
+    """Retain the top `cov` fraction of CANDIDATES as authorised negatives; return
+    the fraction of injected hidden positives that leak past that threshold."""
+    if len(p_cand) == 0 or len(p_inj) == 0:
+        return float("nan")
+    tau = float(np.quantile(p_cand, 1.0 - cov))
+    return float(np.mean(p_inj >= tau))
+
+
+def run_exp2(args):
+    """Falsifiable Exp-2: does compositional GRAMMAR structure beat FLAT four-state
+    terminals? Equal-information arms + protein-disjoint AUROC + a risk–coverage
+    curve on HARDER (sparse, positive-like) injections."""
+    bench._RULES = [r for r in load_rules()
+                    if r.modality == "ppi" and r.effect in ("safer_negative", "riskier_negative")]
+    rule_ids = [r.id for r in bench._RULES]
+    all_rules = [r for r in load_rules() if r.modality == "ppi"]
+    all_pos, gold, nodes, full = _load_dataset(args.dataset)
+    arms = ["fused", "flat+LGBM", "grammar+LR", "grammar+LGBM"]
+    covs = [0.9, 0.7, 0.5]
+    print("=" * 100)
+    print(f"GRAMMAR EXP-2: flat four-state terminals vs compositional grammar — {args.dataset.upper()}")
+    print(f"gold={len(gold)} max_positives={args.max_positives} seeds={args.seeds}  (injections = sparse/positive-like)")
+    print("=" * 100)
+    M = {a: {k: [] for k in ("auroc", "auprc", "brier", "ece", "pdisj")} for a in arms}
+    leak = {a: {c: [] for c in covs} for a in arms}
+
+    for seed in args.seeds:
+        rng = np.random.default_rng(seed)
+        pos = all_pos
+        if args.max_positives and len(pos) > args.max_positives:
+            pos = [pos[i] for i in rng.choice(len(pos), size=args.max_positives, replace=False)]
+        pos = [pos[i] for i in rng.permutation(len(pos))]
+        nt = int(len(pos) * 0.2)
+        test_pos, tr_pos = pos[:nt], pos[nt:]
+        test_excl = {frozenset(p) for p in test_pos}
+        tr_nodes = {n for e in tr_pos for n in e}
+        gold_s = [tuple(p) for p in gold if frozenset(p) not in full and set(p) <= tr_nodes]
+        pos_lab = [p for p in test_pos if set(p) <= tr_nodes]
+        # HARDER injections: held real edges with the FEWEST common neighbours look
+        # most like negatives, so they are the hardest hidden positives to catch.
+        tg = TypedInteractionGraph.from_edges(list(tr_pos), {n: "protein" for n in tr_nodes},
+                                              admissible_types=[("protein", "protein")], name="exp2")
+        held = [tuple(p) for p in full if frozenset(p) not in {frozenset(e) for e in tr_pos}
+                and frozenset(p) not in test_excl and set(p) <= tr_nodes and len(p) == 2]
+        held.sort(key=lambda p: _cn(tg.g, *p))
+        inject = held[:args.inject_k]
+
+        led = LedgerScorer(rules=all_rules).fit(tg)
+        pool = _score_pool(tr_pos, args.max_pool, seed, full, exclude=test_excl,
+                           inject=list(gold_s) + list(pos_lab))
+        by = {frozenset((r["u"], r["v"])): r for r in pool if r.get("injected")}
+        lab_keys = [k for k in [frozenset(p) for p in gold_s] + [frozenset(p) for p in pos_lab] if k in by]
+        y = np.array([1 if frozenset(tuple(k)) in {frozenset(p) for p in gold_s} else 0 for k in lab_keys])
+        neg_set = {frozenset(p) for p in gold_s}
+        y = np.array([1 if k in neg_set else 0 for k in lab_keys])
+        if len(set(y)) < 2:
+            continue
+        pairs = [tuple(k) for k in lab_keys]
+        ledgers = [led.ledger(tg, u, v) for (u, v) in pairs]
+        Xflat, _ = ledger_matrix(ledgers, "flat")
+        Xgram, _ = ledger_matrix(ledgers, "grammar")
+        fused = np.array([_conf(by[k], rule_ids) for k in lab_keys])
+        feats = {"flat+LGBM": Xflat, "grammar+LR": Xgram, "grammar+LGBM": Xgram}
+        modelfn = {"flat+LGBM": lambda: _make_lgbm(seed),
+                   "grammar+LR": lambda: LogisticRegression(C=1.0, max_iter=2000),
+                   "grammar+LGBM": lambda: _make_lgbm(seed)}
+        preds = {"fused": fused}
+        for a in ("flat+LGBM", "grammar+LR", "grammar+LGBM"):
+            preds[a] = _xfit(modelfn[a], feats[a], y, seed)
+
+        # candidate + injection ledgers for the risk–coverage curve
+        clean = [r for r in pool if not r["vetoed"] and not r.get("injected")]
+        csamp = [clean[i] for i in rng.choice(len(clean), size=min(args.cand_sample, len(clean)), replace=False)]
+        cand_led = [led.ledger(tg, r["u"], r["v"]) for r in csamp]
+        Xc_flat, _ = ledger_matrix(cand_led, "flat"); Xc_gram, _ = ledger_matrix(cand_led, "grammar")
+        fused_cand = np.array([_conf(r, rule_ids) for r in csamp])
+        inj_led = [led.ledger(tg, u, v) for (u, v) in inject]
+        Xi_flat, _ = ledger_matrix(inj_led, "flat"); Xi_gram, _ = ledger_matrix(inj_led, "grammar")
+        inj_pool = _score_pool(tr_pos, 1, seed, full, exclude=test_excl, inject=list(inject))
+        inj_by = {frozenset((r["u"], r["v"])): r for r in inj_pool if r.get("injected")}
+        fused_inj = np.array([_conf(inj_by[frozenset(p)], rule_ids) for p in inject if frozenset(p) in inj_by])
+
+        fitted = {a: modelfn[a]().fit(feats[a], y) for a in ("flat+LGBM", "grammar+LR", "grammar+LGBM")}
+        pcand = {"fused": fused_cand,
+                 "flat+LGBM": fitted["flat+LGBM"].predict_proba(Xc_flat)[:, 1],
+                 "grammar+LR": fitted["grammar+LR"].predict_proba(Xc_gram)[:, 1],
+                 "grammar+LGBM": fitted["grammar+LGBM"].predict_proba(Xc_gram)[:, 1]}
+        pinj = {"fused": fused_inj,
+                "flat+LGBM": fitted["flat+LGBM"].predict_proba(Xi_flat)[:, 1],
+                "grammar+LR": fitted["grammar+LR"].predict_proba(Xi_gram)[:, 1],
+                "grammar+LGBM": fitted["grammar+LGBM"].predict_proba(Xi_gram)[:, 1]}
+
+        for a in arms:
+            p = preds[a]
+            M[a]["auroc"].append(roc_auc_score(y, p)); M[a]["auprc"].append(average_precision_score(y, p))
+            M[a]["brier"].append(_brier(y, p)); M[a]["ece"].append(_ece(y, p))
+            if a == "fused":
+                M[a]["pdisj"].append(float("nan"))
+            else:
+                M[a]["pdisj"].append(_protein_disjoint_auroc(feats[a], y, lab_keys, seed, modelfn[a]))
+            for c in covs:
+                leak[a][c].append(_leak_at_coverage(pcand[a], pinj[a], c))
+        print(f"  seed {seed}: labeled={len(y)} (neg={int(y.sum())}) cand={len(csamp)} inject={len(inject)} "
+              f"(median inject CN={int(np.median([_cn(tg.g,*p) for p in inject]))})")
+
+    m = lambda a, k: float(np.nanmean(M[a][k])) if M[a][k] else float("nan")
+    ml = lambda a, c: float(np.nanmean(leak[a][c])) if leak[a][c] else float("nan")
+    print("\n" + "=" * 100)
+    hdr = (f"  {'arm':<15}{'AUROC':>8}{'AUPRC':>8}{'Brier':>8}{'ECE':>8}{'pdisj':>8}"
+           + "".join(f"{'leak@'+str(int(c*100)):>10}" for c in covs))
+    print(hdr); print("  " + "-" * (len(hdr) - 2))
+    for a in arms:
+        print(f"  {a:<15}{m(a,'auroc'):>8.3f}{m(a,'auprc'):>8.3f}{m(a,'brier'):>8.3f}{m(a,'ece'):>8.3f}"
+              f"{m(a,'pdisj'):>8.3f}" + "".join(f"{100*ml(a,c):>9.1f}%" for c in covs))
+    print("=" * 100)
+    print("  Grammar earns the Fisher stage ONLY if grammar+* beats flat+LGBM on protein-disjoint AUROC")
+    print("  AND on the risk–coverage curve (lower leak@coverage) — not merely the fused mean.")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dataset", choices=["huri", "dryad"], default="huri")
@@ -96,7 +224,12 @@ def main():
     ap.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2])
     ap.add_argument("--max-pool", type=int, default=12000)
     ap.add_argument("--inject-k", type=int, default=600)
+    ap.add_argument("--cand-sample", type=int, default=1500)
+    ap.add_argument("--exp2", action="store_true", help="run the flat-vs-grammar Exp-2")
     args = ap.parse_args()
+    if args.exp2:
+        run_exp2(args)
+        return
 
     bench._RULES = [r for r in load_rules()
                     if r.modality == "ppi" and r.effect in ("safer_negative", "riskier_negative")]
