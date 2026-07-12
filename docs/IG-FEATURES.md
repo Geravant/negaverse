@@ -28,7 +28,8 @@ set. Several features below therefore become two gates, one per product.
 |---|---|---|---|
 | Ch4 Entropy-weighted fusion | Per-candidate stream weights: trust the decisive stream | `ig/entropy_fusion.py`, wired into `pipeline.py` (`fusion_mode="entropy"`) | **Strong — but only with stream-reported confidence.** Scalar proxy backfires. |
 | Log-odds fusion + calibrated stack | Fuse evidence in log-odds coordinates (agreement reinforces); a supervised stack gives a *calibrated* confidence + lower bound | `ig/logodds_fusion.py`, `fusion_mode="logodds"` (opt-in), `scripts/eval_logodds.py` | **Stack is a decisive calibration win** (Brier 0.67→0.05, ECE 0.78→0.02, AUROC 0.86→0.87). **Unsupervised pool alone is worse-calibrated than the mean** — supervision is mandatory. LCB correct but negligible at current data density. |
-| Ch5 Determinantal (DPP) selection | Diverse eval/train set curation | `ig/dpp.py` | **Modest on real embeddings; removes the worst near-duplicates.** |
+| Ch5 Determinantal (DPP) selection | Diverse eval/train set curation | `ig/dpp.py` | **Modest on real embeddings; removes the worst near-duplicates.** Saturates at embedding rank — a small-set de-duplicator, not a full-scale selector. |
+| Fisher-information (D-optimal) selection | Pick negatives that constrain distinct downstream-model directions | `ig/fisher.py`, `scripts/eval_fisher.py` | **Measured NEGATIVE result — do not wire.** Highest diversity, but selects 73% of injected hidden positives; downstream AUROC collapses to ~0.26 under RF *and* LGBM. The objective is anti-aligned with safety; a hardness gate barely helps. |
 | Ch1 Surprisal vs a frozen cloud | Resemblance to the positive manifold — over graph *and* sequence (ESM2) feature spaces | `ig/surprisal.py`, `scripts/eval_esm2_manifold.py` | **Gold-cloud = null (0.47). Graph manifold real (0.88). ESM2 sequence manifold is the *independent* axis (corr ~0.2) → 3-way fusion 0.81→0.88.** |
 | Ch7 Geometric routing (relative margin) | Margin between positive-like and negative-like clouds, not an absolute cutoff | `ig/margin.py` | Component of C's relative-margin score (0.95). |
 | Ch6 Recurrence / Hawkes | Corroboration: confidence = independent streams that echo the verdict | (design; uses `stream_disagreement`) | Precondition (stream independence) holds in negaverse. |
@@ -364,3 +365,55 @@ labeled gold-N / held-out-edge pairs per seed; label 1 = non-interaction):
    injection-selection rate is ~9–12% across mean / pool / stack alike. That is
    the job of the selection geometry (DPP / Fisher / Sinkhorn / PSM), evaluated
    separately.
+
+---
+
+## Fisher-information (D-optimal) selection — a measured negative result
+
+**Idea (from the brainstorm).** The DPP spans *embedding* directions; a Fisher
+selector spans *downstream-model parameter* directions — pick candidates that,
+if labelled, would most sharpen the model, refusing near-duplicates that teach
+the same parameter. `argmax_S log det(F_0 + Σ_{i∈S} w_i x_i x_iᵀ)`, greedy via
+Sherman–Morrison (`ig/fisher.py`). RF/LGBM have no θ-gradient, so the Fisher
+weights `w_i = p_i(1−p_i)` come from a logistic **surrogate** on the same
+spectral-Hadamard features, and the batch transfers to the tree model — the
+reframe that made this cheap and reusable (it's `dpp.py`'s greedy-log-det in
+parameter space, and unlike a low-rank cosine DPP it does not saturate).
+
+**Evaluation** (`scripts/eval_fisher.py`, HuRI, 6k positives × 3 seeds, one
+negative per training positive):
+
+| arm | AUROC (RF) | AUROC (LGBM) | hidden-pos selected % | param log-det (diversity) |
+|---|---|---|---|---|
+| stacked (baseline) | **0.713** | **0.511** | **11.6** | 4.4 |
+| topology_hard | 0.639 | 0.324 | 24.2 | 4.6 |
+| random_veto | 0.665 | 0.353 | 35.4 | 4.6 |
+| fisher (weighted) | 0.261 | 0.238 | 72.9 | 4.9 |
+| fisher (unweighted D-opt) | 0.261 | 0.238 | 72.7 | 4.9 |
+| fisher_safe (hardness ≤ 0.7) | 0.270 | 0.247 | 59.8 | 4.9 |
+
+**Verdict: do not wire it.** Fisher wins the metric it optimises — it has the
+**highest** parameter-space diversity — and that is exactly why it fails as a
+*negative* selector:
+
+1. **The objective is anti-aligned with safety.** D-optimal design selects the
+   highest-leverage points (`argmax x_iᵀ M⁻¹ x_i`). In negative selection the
+   highest-leverage points are the **hidden positives** (real edges that look most
+   link-like) and unrepresentative embedding extremes — so maximising information
+   maximises contamination. Fisher picked **73%** of the injected hidden positives
+   vs stacked's 12%.
+2. **Downstream collapse, model-independent.** The contaminated + unrepresentative
+   negatives give a degenerate boundary: AUROC ≈ 0.26 under *both* RF and LGBM —
+   well below random, the worst of every arm.
+3. **A safety gate doesn't rescue it.** Capping hardness ≤ 0.7 only moves
+   injection 73%→60% and AUROC 0.26→0.27: the greedy re-concentrates on whatever
+   high-leverage points survive the cap.
+
+This is the inverse of active learning, where you then *acquire the label* for the
+informative point; here the point is *assumed* negative, so "most informative" =
+"most likely mislabelled." The core (`greedy_fisher_design`, unit-tested) stays as
+an `ig/` prototype — it is a correct D-optimal selector, useful where labels are
+actually acquired — but it is **not** a negative-selection gate. The lesson also
+narrows the search: the winning selection ideas here match a *nuisance
+distribution* under a safety gate (stacked, PSM, and next, Sinkhorn), they do not
+maximise an unconstrained information objective.

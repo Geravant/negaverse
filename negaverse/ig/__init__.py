@@ -32,6 +32,7 @@ from .logodds_fusion import (
     sigmoid,
 )
 from .dpp import greedy_map_dpp
+from .fisher import greedy_fisher_design, logistic_fisher_weights
 from .surprisal import background_similarity, normalize_rows, topk_mean_sim
 from .margin import margin_gate, margin_score
 
@@ -47,6 +48,8 @@ __all__ = [
     "logodds_pool",
     "sigmoid",
     "greedy_map_dpp",
+    "greedy_fisher_design",
+    "logistic_fisher_weights",
     "background_similarity",
     "normalize_rows",
     "topk_mean_sim",
