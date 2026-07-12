@@ -76,9 +76,10 @@ class PipelineConfig:
     # calibration stage: fit a LogOddsStack on gold labels and emit a CALIBRATED
     # confidence + confidence_lcb on records (the recommended log-odds integration —
     # the unsupervised pool is the right coordinate but not a calibrated scale).
-    # Requires calibration_gold (true non-interactions); positives are sampled from
-    # the graph's own edges. Off by default (needs a gold-negative source).
-    calibrate: bool = False
+    # ON by default: uses calibration_gold if given, else auto-loads in-space
+    # Negatome gold negatives for a PPI graph. Degrades gracefully to the heuristic
+    # mean when no gold is in-space (e.g. the viral-host demo) — see _fit_calibrator.
+    calibrate: bool = True
     calibration_gold: list[tuple[str, str]] | None = None
     calibration_n_pos: int | None = None   # #positive edges to sample; None = #gold
     calibration_l2: float = 0.2
@@ -216,8 +217,10 @@ def run_pipeline(
     # scored through the same GRADED streams as the candidates. Overwrites the
     # heuristic fused confidence in place; hardness (a separate axis) is untouched.
     calib = None
-    if cfg.calibrate and cfg.calibration_gold and graded_f and kept:
-        calib = _fit_calibrator(graph, graded_f, cfg)
+    if cfg.calibrate and graded_f and kept:
+        gold = _resolve_calibration_gold(graph, cfg)
+        if gold:
+            calib = _fit_calibrator(graph, graded_f, cfg, gold)
         if calib is not None:
             for s in kept:
                 s.confidence, lcb = calib.transform(s.sub_scores)
@@ -377,13 +380,30 @@ def _contested(kept: list[Scored], pct: float,
     return uniq
 
 
+def _resolve_calibration_gold(graph: TypedInteractionGraph,
+                              cfg: PipelineConfig) -> list[tuple[str, str]] | None:
+    """Gold negatives for the calibrator: the caller's `calibration_gold` if given,
+    else auto-load in-space Negatome pairs for a PPI graph. Returns None (→ mean
+    fallback) for any graph where no external non-interactions are in-space."""
+    if cfg.calibration_gold is not None:
+        return cfg.calibration_gold
+    if cfg.modality != "ppi":
+        return None
+    try:
+        from .io import load_negatome_in_ensembl_space
+        return [tuple(p) for p in load_negatome_in_ensembl_space(set(graph.g.nodes()))]
+    except Exception:
+        return None                          # data absent / loader failed → mean fallback
+
+
 def _fit_calibrator(graph: TypedInteractionGraph, graded_f: list[Filter],
-                    cfg: PipelineConfig) -> PipelineCalibrator | None:
+                    cfg: PipelineConfig,
+                    calibration_gold: list[tuple[str, str]]) -> PipelineCalibrator | None:
     """Fit the calibration stack on gold negatives (y=1) and sampled real edges
     (y=0), scored through the same GRADED streams as the candidates. Returns None
     if there are too few labels to fit a stable model."""
     names = sorted(f.name for f in graded_f)
-    gold = [(a, b) for (a, b) in cfg.calibration_gold
+    gold = [(a, b) for (a, b) in calibration_gold
             if graph.g.has_node(a) and graph.g.has_node(b)]
     edges = list(graph.g.edges())
     if len(gold) < 10 or len(edges) < 10:

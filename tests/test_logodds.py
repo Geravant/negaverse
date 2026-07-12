@@ -110,7 +110,7 @@ def test_pipeline_calibration_stage_end_to_end():
                 break
         if len(gold) >= 60:
             break
-    base = PipelineConfig(n_eval=120, n_train=120, seed=0, match_on_type="viral")
+    base = PipelineConfig(n_eval=120, n_train=120, seed=0, match_on_type="viral", calibrate=False)
     cfg = PipelineConfig(n_eval=120, n_train=120, seed=0, match_on_type="viral",
                          calibrate=True, calibration_gold=gold)
     r_base = run_pipeline(graph, base)

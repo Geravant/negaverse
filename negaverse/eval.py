@@ -94,18 +94,33 @@ def hardness_split(records: list[NegativeRecord]) -> dict:
 def gold_recall(
     records: list[NegativeRecord],
     gold_pairs: set[frozenset],
-    conf_threshold: float = 0.5,
+    conf_threshold: float | None = None,
+    quantile: float = 0.5,
 ) -> dict:
     """Of the Negatome golds that appear among emitted negatives, what fraction
-    are called high-confidence? Only meaningful when the graph is in-space."""
+    are called high-confidence? Only meaningful when the graph is in-space.
+
+    Scale-robust: "high-confidence" is judged RELATIVE to the emitted pool's own
+    confidence distribution (the `quantile`) unless an explicit absolute
+    `conf_threshold` is given — so the metric means the same whether `confidence`
+    is the heuristic mean or a calibrated probability. Golds (true
+    non-interactions) should sit in the high-confidence part of the emitted set,
+    which is a ranking property invariant to the confidence scale."""
     emitted = {frozenset((r.u, r.v)): r for r in records}
     hits = [emitted[g] for g in gold_pairs if g in emitted]
     if not hits:
         return {"golds_in_pool": 0, "note": "no gold pairs in emitted set (space mismatch?)"}
-    high = sum(1 for r in hits if r.confidence >= conf_threshold)
+    if conf_threshold is not None:
+        thr, kind = float(conf_threshold), f"abs>={conf_threshold}"
+    else:
+        thr = float(np.quantile([r.confidence for r in records], quantile))
+        kind = f"pool_q{quantile:g}"
+    high = sum(1 for r in hits if r.confidence >= thr)
     return {
         "golds_in_pool": len(hits),
         "high_confidence": high,
         "recall_at_threshold": round(high / len(hits), 4),
+        "threshold": round(thr, 4),
+        "threshold_kind": kind,
         "mean_confidence": round(float(np.mean([r.confidence for r in hits])), 4),
     }
