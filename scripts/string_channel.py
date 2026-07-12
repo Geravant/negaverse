@@ -92,6 +92,52 @@ def channel_scores_for_ensp_pairs(ensp_pairs: set[frozenset[str]],
     return scores
 
 
+def channel_scores_within_node_set(ensp_nodes: set[str], channel: str) -> dict[frozenset[str], float]:
+    """Streams the 13.7M-row links file once, keeping every row where BOTH
+    proteins are in `ensp_nodes` — unlike `channel_scores_for_ensp_pairs`,
+    this doesn't need the exact pair known in advance, just graph membership
+    (same restrict-by-node-set pattern as
+    `build_known_positive_sources.py::build_string`'s known-positive scan).
+    This is what makes bulk-precomputing a whole graph's worth of pairs
+    practical: candidate pairs are a random sample of a graph's non-edges,
+    re-drawn every pipeline run, so there's no fixed "exact pairs" list to
+    hand this in advance — but every candidate's endpoints are always graph
+    nodes, so scanning by membership covers any candidate any run could ever
+    draw, in one pass, regardless of graph size."""
+    scores: dict[frozenset[str], float] = {}
+    with gzip.open(LINKS, "rt") as fh:
+        header = next(fh).split()
+        col = header.index(channel)
+        for line in fh:
+            parts = line.split()
+            p1, p2 = parts[0], parts[1]
+            if p1 in ensp_nodes and p2 in ensp_nodes:
+                pair = frozenset((p1, p2))
+                if pair not in scores:
+                    scores[pair] = int(parts[col]) / 1000.0
+    return scores
+
+
+def compute_for_node_set(node_ids: list[str], channel: str) -> dict[frozenset[str], float]:
+    """Like `compute()`, but for "every pair within this node set" instead of
+    a pre-specified pair list — the bulk-precompute path used to cover a
+    whole graph (e.g. HuRI) so a graded rule's `< threshold` check has real
+    data for candidate pairs the pipeline hasn't sampled yet."""
+    acc_to_ensp = map_accessions_to_ensp(node_ids)
+    print(f"  mapped {len(acc_to_ensp)}/{len(node_ids)} accessions to a STRING protein ID")
+
+    ensp_to_accs: dict[str, str] = {ensp: acc for acc, ensp in acc_to_ensp.items()}
+    ensp_scores = channel_scores_within_node_set(set(ensp_to_accs), channel)
+
+    scores: dict[frozenset[str], float] = {}
+    for ensp_pair, score in ensp_scores.items():
+        acc_pair = frozenset(ensp_to_accs[e] for e in ensp_pair)
+        scores[acc_pair] = score
+    print(f"scored {len(scores)} pairs within the {len(node_ids)}-node set "
+          f"({len(ensp_scores) - len(scores)} same-accession or collided ENSP pairs dropped)")
+    return scores
+
+
 def compute(pairs: list[tuple[str, str]], channel: str) -> dict[frozenset[str], float]:
     """Returns {frozenset({acc_a, acc_b}): score in [0, 1]} for `channel`,
     for pairs where both accessions map to a STRING ENSP AND STRING's links

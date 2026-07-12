@@ -85,3 +85,27 @@ def test_unresolvable_accession_silently_absent(tmp_path, monkeypatch):
     assert sc.map_accessions_to_ensp(["ENSGAAA", "UNKNOWN"]) == {
         "ENSGAAA": "9606.ENSP001"}
     assert sc.compute([("ENSGAAA", "UNKNOWN")], "experimental") == {}
+
+
+def test_node_set_scan_finds_pair_without_a_prior_pair_list(tmp_path, monkeypatch):
+    """`channel_scores_within_node_set`/`compute_for_node_set` don't need the
+    exact pair known in advance (unlike `compute()`'s --pairs-file mode) —
+    just membership in the node set — which is what makes bulk-precomputing
+    a whole graph's candidate pairs practical (see module's `compute()`
+    docstring)."""
+    _patch_files(tmp_path, monkeypatch)
+
+    ensp_scores = sc.channel_scores_within_node_set({"9606.ENSP001", "9606.ENSP002"}, "experimental")
+    assert ensp_scores == {frozenset({"9606.ENSP001", "9606.ENSP002"}): 0.12}
+
+    acc_scores = sc.compute_for_node_set(["ENSGAAA", "ENSGBBB"], "experimental")
+    assert acc_scores == {frozenset({"ENSGAAA", "ENSGBBB"}): 0.12}
+
+
+def test_node_set_scan_ignores_pairs_with_an_out_of_set_endpoint(tmp_path, monkeypatch):
+    """A STRING row where only one endpoint is in the requested node set must
+    not be included — this is the whole point of scanning by membership
+    instead of a fixed pair list, so it must not over-match."""
+    _patch_files(tmp_path, monkeypatch)
+    assert sc.channel_scores_within_node_set({"9606.ENSP001"}, "experimental") == {}
+    assert sc.compute_for_node_set(["ENSGAAA"], "experimental") == {}
