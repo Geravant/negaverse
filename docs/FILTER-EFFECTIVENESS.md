@@ -314,6 +314,27 @@ The lesson is decisive: **matching negatives *to the positives* is the wrong obj
 evaluation set is representative.** `safe`/`stacked` win because they match the *evaluation*
 population (clean and representative), not the positives. Same ordering under LGBM.
 
+**Match to the EVALUATION population, not the positives (`eval_matched` arm) — the fix confirmed.**
+Leakage-safe: split the gold negatives into a MATCH fold (derive the target degree distribution,
+resampled to full size) and a disjoint TEST fold; degree-match the clean pool to the match fold;
+test on the other fold. Δ AUROC vs `random_veto`, 3 seeds:
+
+| arm | HuRI·RF | HuRI·LGBM | DRYAD·RF | DRYAD·LGBM |
+|---|---:|---:|---:|---:|
+| `psm_to_positives` | −0.019 | −0.017 | −0.020 | −0.025 |
+| `eval_matched` | +0.011 | +0.064 | +0.029 | +0.042 |
+| **`eval_matched_clean`** | +0.013 | +0.105 | +0.034 | +0.055 |
+| `stacked` (default) | +0.014 | +0.115 | +0.033 | +0.047 |
+
+→ **Flipping the match target from positives to the eval population is worth ~+0.05–0.09** (every
+`eval_matched` cell beats random; every `psm_to_positives` cell loses). Restricting to the clean
+pool (`eval_matched_clean`) adds a bit more and **ties or beats `stacked` in 2 of 4 cells**. This
+confirms the principle the whole section converges on: **the winning objective is clean +
+representative-of-the-evaluation, never matched-to-the-positives.** `topology_safe` already
+approximates eval-matching (broad + clean), which is why it was a top arm all along; `eval_matched`
+makes that explicit and measurable. It's a legitimate co-best selector — no clear winner over
+`stacked`/`safe`, but it validates *why* they win.
+
 ### Deferred (documented, not built) — with rationale
 * **nnPU / non-edges-as-unlabeled** — the theoretically correct framing (it *is* the
   hidden-positive problem), but a downstream-*model* change, not a negative-generator change; a
