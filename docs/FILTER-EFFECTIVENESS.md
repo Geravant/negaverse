@@ -283,11 +283,36 @@ default (`stacked`) and `topology_safe` catch ~100 %** of them. This is the sing
 validation in the project: the failure mode is real, and the fix works.
 
 **Matched counterfactuals (`counterfactual` arm) — negative result.** Degree-matched veto-clean
-negatives (endpoint-degree sum matched to the positives) **lose** to random (AUROC Δ −0.059 HuRI,
-−0.036 DRYAD) and select **47.6 %** hidden positives. Matching *without an independent safety
+negatives (endpoint-degree sum matched to the positives) **lose** to random (AUROC Δ −0.060 HuRI,
+−0.036 DRYAD) and select **50 %** hidden positives. Matching *without an independent safety
 blocking reason* re-introduces exactly the positive-like/hub contamination it was meant to avoid
 — confirming the review's own caveat that counterfactuals need a blocking reason, not just
 matching. Safety must gate the label; matching alone does not.
+
+**Propensity-score matching (`psm` arm) — the counterfactual done right, and it decomposes the
+failure.** PSM flips the order: restrict to the VERIFIED-CLEAN region first (veto-clean AND
+topology-hardness ≤ `cap` — the injection backtest showed hidden positives concentrate in the
+high-hardness tail), *then* degree-match to the positives. Sweeping `cap` down cleans the pool,
+and the two measured effects separate cleanly (HuRI 20k, RF, 3 seeds):
+
+| arm | ΔAUROC vs random | hidden-pos selected | leaked (purity) |
+|---|---:|---:|---:|
+| `counterfactual` (whole pool, cap=1.0) | −0.060 | 50.0 % | 2.3 |
+| `psm[cap=0.9]` | −0.034 | — | 0.3 |
+| `psm[cap=0.7]` | **−0.023** | 6.8 % | 0.3 |
+| `psm[cap=0.5]` | −0.028 | **2.6 %** | 0.7 |
+| `topology_safe` / `stacked` | +0.002 / +0.005 | 0.1 / 0.2 % | 0.0 |
+
+→ **PSM validates the idea and isolates *why* matching fails.** Restricting to the clean pool
+works exactly as predicted: hidden-positive selection collapses **50 % → 2.6 %** and AUROC recovers
+**+0.037** (counterfactual −0.060 → psm −0.023). So ~60 % of the counterfactual's deficit *was*
+contamination — the clean-pool fix removes it. **But PSM still loses to random** (−0.023) and
+trails `stacked`/`safe`. That residual is *not* contamination (it's ~clean at cap=0.5); it is
+**distribution mismatch** — degree-matching to the positives concentrates the negatives on hubs,
+so training no longer resembles the representative gold-test population (the Park & Marcotte point).
+The lesson is decisive: **matching negatives *to the positives* is the wrong objective when the
+evaluation set is representative.** `safe`/`stacked` win because they match the *evaluation*
+population (clean and representative), not the positives. Same ordering under LGBM.
 
 ### Deferred (documented, not built) — with rationale
 * **nnPU / non-edges-as-unlabeled** — the theoretically correct framing (it *is* the
