@@ -124,3 +124,35 @@ def test_pipeline_calibration_stage_end_to_end():
     changed = [rec for rec in r_cal.records
                if (rec.u, rec.v) in base_conf and abs(rec.confidence - base_conf[(rec.u, rec.v)]) > 1e-6]
     assert changed
+
+
+def test_gold_recall_scale_robust():
+    """gold_recall's default (quantile) path is invariant to a monotone rescale of
+    confidence — the property that makes it safe under calibration."""
+    from negaverse import eval as ev
+    from negaverse.schema import NegativeRecord
+
+    def rec(u, v, c):
+        return NegativeRecord(u=u, v=v, mode="train", confidence=c, hardness=0.5,
+                              streams={}, provenance={})
+    # 10 records; the two golds sit in the upper half of the confidence pool
+    confs = [0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 0.95]
+    records = [rec(f"g{i}", f"h{i}", c) for i, c in enumerate(confs)]
+    gold = {frozenset(("g7", "h7")), frozenset(("g9", "h9"))}   # confidences 0.80, 0.95
+
+    base = ev.gold_recall(records, gold)                        # default: pool-median quantile
+    assert base["golds_in_pool"] == 2
+    assert base["recall_at_threshold"] == 1.0                  # both golds above the median
+    assert base["threshold_kind"].startswith("pool_q")
+
+    # monotone rescale of EVERY confidence must not change the quantile-based recall
+    for r in records:
+        r.confidence = r.confidence ** 2                       # monotone, changes the scale
+    rescaled = ev.gold_recall(records, gold)
+    assert rescaled["recall_at_threshold"] == base["recall_at_threshold"]
+
+    # explicit absolute threshold still supported and behaves absolutely
+    for r, c in zip(records, confs):
+        r.confidence = c
+    hi = ev.gold_recall(records, gold, conf_threshold=0.85)
+    assert hi["threshold_kind"] == "abs>=0.85" and hi["high_confidence"] == 1   # only 0.95
