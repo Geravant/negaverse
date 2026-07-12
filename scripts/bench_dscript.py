@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -30,8 +31,12 @@ from sklearn.metrics import roc_auc_score
 
 from negaverse.io import load_huri_graph, load_negatome_in_ensembl_space
 
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")   # MPS launcher inherits this
 DSCRIPT = ".venv-dscript/bin/dscript"
-DEV = "-1"                                   # CPU (D-SCRIPT device is a GPU int; -1 = CPU)
+# train on Apple Metal via the launcher (scripts/dscript_mps.py routes .cuda()->mps);
+# device "0" makes D-SCRIPT's use_cuda true. embed already done; predict runs on cpu.
+MPS_TRAIN = [".venv-dscript/bin/python", "scripts/dscript_mps.py"]
+DEV = "-1"                                   # CPU fallback (D-SCRIPT device is a GPU int; -1 = CPU)
 SEQS = "local-docs/huri/sequences_ensg.tsv"
 COMPOSED = "out/inductive/huri_composed.jsonl"
 WORK = Path("out/dscript")
@@ -60,10 +65,12 @@ def _write_pairs(path, pairs, labels):
 
 
 def _predict_auroc(name, test_pairs, labels, model, emb):
-    pred = WORK / f"{name}_pred.tsv"
+    out = WORK / f"{name}_pred.tsv"
     _write_pairs(WORK / f"{name}_topred.tsv", test_pairs, [0] * len(test_pairs))
+    # NB: `predict` wants -d cpu (not -1 like train/embed), and appends ".tsv".
     _run([DSCRIPT, "predict", "--pairs", str(WORK / f"{name}_topred.tsv"),
-          "--model", model, "--embeddings", emb, "-d", DEV, "--outfile", str(pred)])
+          "--model", model, "--embeddings", emb, "-d", "cpu", "--outfile", str(out)])
+    pred = str(out) + ".tsv"
     score = {}
     for line in open(pred):
         p = line.rstrip("\n").split("\t")
@@ -136,6 +143,16 @@ def main():
     if not Path(emb).exists():
         _run([DSCRIPT, "embed", "--seqs", str(fasta), "-o", emb, "-d", DEV])
 
+    # every train/test pair must use an EMBEDDED protein — restrict the pools to
+    # the universe we actually embedded (regimes below draw from the full lists).
+    uset = set(universe)
+    inU = lambda pr: pr[0] in uset and pr[1] in uset
+    pos = [p for p in pos if inU(p)]
+    gold = [p for p in gold if inU(p)]
+    arms = {k: [p for p in v if inU(p)] for k, v in arms.items()}
+    print(f"  restricted to embedded universe: {len(pos)} pos, {len(gold)} gold, "
+          f"arms { {k: len(v) for k, v in arms.items()} }")
+
     results = {}
     for regime in args.regimes:
         for arm, negs in arms.items():
@@ -162,10 +179,11 @@ def main():
 
             print(f"\n== {tag}: train {len(tr_pos)}+/{len(tr_neg)}-  test {len(te_pos)}+/{len(te_neg)}-")
             prefix = str(WORK / f"{tag}_model")
-            _run([DSCRIPT, "train", "--train", str(WORK / f"{tag}_train.tsv"),
-                  "--test", str(WORK / f"{tag}_test.tsv"), "--embedding", emb,
-                  "--num-epochs", str(args.epochs), "--save-prefix", prefix, "-d", DEV])
             model = f"{prefix}_final.sav"
+            if not Path(model).exists():                       # skip if already trained
+                _run(MPS_TRAIN + ["train", "--train", str(WORK / f"{tag}_train.tsv"),
+                     "--test", str(WORK / f"{tag}_test.tsv"), "--embedding", emb,
+                     "--num-epochs", str(args.epochs), "--save-prefix", prefix, "-d", "0"])
             if not Path(model).exists():
                 cand = sorted(WORK.glob(f"{tag}_model_epoch*.sav"))
                 model = str(cand[-1]) if cand else model
