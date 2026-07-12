@@ -37,10 +37,25 @@ SOURCES = "rules/sources.yaml"
 SPACES = {
     "sars_host": {"emb": "local-docs/sars/esm2_sars.npz",
                   "meta": "local-docs/sars/proteins.tsv",       # node_id side source length
-                  "side": "host"},
+                  "seq": "local-docs/sars/sequences.tsv", "side": "host"},
     "idg": {"emb": "local-docs/idg/esm2_idg.npz",
-            "meta": "local-docs/idg/kinases.tsv"},               # uniprot symbol tdl length
+            "meta": "local-docs/idg/kinases.tsv",               # uniprot symbol tdl length
+            "seq": "local-docs/idg/sequences.tsv"},
 }
+
+# TOP-IDP per-residue disorder propensity (Campen 2008) — sequence-only, so it
+# screens the model's disorder/sticky-hub failure mode BEFORE spending AF2 GPU
+# time (validated: tracks AF2 disorder at Spearman 0.56; see af2_validate.py).
+_TOP_IDP = {"A": 0.06, "R": 0.180, "N": 0.007, "D": 0.192, "C": 0.02, "Q": 0.318,
+            "E": 0.736, "G": 0.166, "H": 0.303, "I": -0.486, "L": -0.326, "K": 0.586,
+            "M": -0.397, "F": -0.697, "P": 0.987, "S": 0.341, "T": 0.059, "W": -0.884,
+            "Y": -0.510, "V": -0.121}
+_DISORDER_THR = 0.161            # HuRI 75th percentile — above this = disorder-risky
+
+
+def _seq_disorder(seq):
+    v = [_TOP_IDP.get(c, 0.0) for c in seq]
+    return sum(v) / len(v) if v else 0.0
 
 
 def _feat(u, v, emb):
@@ -123,6 +138,10 @@ def main():
     ap.add_argument("--max-per-protein", type=int, default=3,
                     help="hub-diversity cap: max times any protein may appear in the "
                          "shortlist (an inductive model over-scores sticky hubs; 0 = no cap)")
+    ap.add_argument("--max-disorder", type=float, default=_DISORDER_THR,
+                    help="drop candidate pairs whose more-disordered protein exceeds this "
+                         "TOP-IDP sequence-disorder score — the model's structural failure "
+                         "mode, screened before AF2 (0 = keep all)")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
@@ -141,9 +160,24 @@ def main():
         extra_edges = {frozenset(e) for e in sg.g.edges()}   # don't re-predict known SARS edges
     documented = _documented(proteins, extra_edges)
 
-    # score every admissible, undocumented pair
-    cand = [(u, v) for u, v in combinations(proteins, 2)
-            if frozenset((u, v)) not in documented]
+    # sequence disorder (TOP-IDP) per candidate protein — for the pre-AF2 screen
+    sd = {}
+    if SPACES[args.space].get("seq"):
+        for l in open(SPACES[args.space]["seq"]):
+            if "\t" in l:
+                i, s = l.rstrip("\n").split("\t")[:2]; sd[i] = _seq_disorder(s)
+    pair_dis = lambda u, v: max(sd.get(u, 0.0), sd.get(v, 0.0))
+
+    # score every admissible, undocumented pair; optionally drop disorder-risky
+    # pairs (the model over-scores disordered sticky proteins AF2 rejects anyway)
+    all_cand = [(u, v) for u, v in combinations(proteins, 2)
+                if frozenset((u, v)) not in documented]
+    if args.max_disorder:
+        cand = [pr for pr in all_cand if pair_dis(*pr) <= args.max_disorder]
+        print(f"  disorder screen (TOP-IDP ≤ {args.max_disorder}): dropped "
+              f"{len(all_cand)-len(cand)}/{len(all_cand)} disorder-risky pairs")
+    else:
+        cand = all_cand
     X, kept = _matrix(cand, emb)
     if len(X) == 0:
         raise SystemExit("no scorable candidate pairs")
@@ -169,12 +203,12 @@ def main():
     Path("out/inductive").mkdir(parents=True, exist_ok=True)
     out = Path(f"out/inductive/novel_{args.space}_{args.neg_arm}.tsv")
     with out.open("w") as fh:
-        hdr = "rank\tprotein_a\tprotein_b\tname_a\tname_b\tp_interact"
+        hdr = "rank\tprotein_a\tprotein_b\tname_a\tname_b\tp_interact\tmax_disorder"
         hdr += "\ttdl_a\ttdl_b\n" if args.space == "idg" else "\n"
         fh.write(hdr)
         for rank, i in enumerate(picked, 1):
             u, v = kept[i]
-            row = f"{rank}\t{u}\t{v}\t{names.get(u,u)}\t{names.get(v,v)}\t{p[i]:.4f}"
+            row = f"{rank}\t{u}\t{v}\t{names.get(u,u)}\t{names.get(v,v)}\t{p[i]:.4f}\t{pair_dis(u,v):.3f}"
             row += f"\t{extra_meta.get(u,'')}\t{extra_meta.get(v,'')}\n" if args.space == "idg" else "\n"
             fh.write(row)
 
