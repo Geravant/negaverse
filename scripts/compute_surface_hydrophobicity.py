@@ -100,12 +100,39 @@ def _get_dssp_residues(accession: str, cif_path: Path) -> list[dict] | None:
 
     from Bio.PDB import MMCIFParser
     from Bio.PDB.DSSP import DSSP
+    from scripts.fetch_alphafold_structures import _fetch_with_retry
 
     parser = MMCIFParser(QUIET=True)
-    structure = parser.get_structure(accession, str(cif_path))
-    try:
-        dssp = DSSP(structure[0], str(cif_path), dssp="mkdssp", file_type="MMCIF")
-    except Exception:
+
+    def _parse():
+        structure = parser.get_structure(accession, str(cif_path))
+        return DSSP(structure[0], str(cif_path), dssp="mkdssp", file_type="MMCIF")
+
+    dssp = None
+    for attempt in range(2):
+        try:
+            dssp = _parse()
+            break
+        except Exception as e:
+            if attempt == 0:
+                # Most parse failures are a stale/corrupt cached .cif from an
+                # earlier interrupted fetch (e.g. a 0-byte file), not a
+                # permanently bad accession — delete it and re-fetch once
+                # before giving up.
+                print(f"  [dssp] {accession}: parse failed ({e}) — re-fetching structure, retrying once")
+                cif_path.unlink(missing_ok=True)
+                if _fetch_with_retry(accession, cif_path.parent) is None:
+                    return None
+                continue
+            # A malformed/truncated cached .cif (or any other per-file parse
+            # failure) that survives a re-fetch is this one accession's
+            # problem, not the whole batch's — treat it exactly like "DSSP
+            # fails to run on this structure at all" so the caller falls back
+            # to Tier 2, instead of an unhandled exception here taking down
+            # every other accession's future too.
+            print(f"  [dssp] {accession}: parse failed again after re-fetch ({e}) — falling back to Tier 2")
+            return None
+    if dssp is None:
         return None
 
     residues = []
@@ -121,27 +148,33 @@ def _get_dssp_residues(accession: str, cif_path: Path) -> list[dict] | None:
 
 
 def _structure_score(accession: str, cif_path: Path, plddt_path: Path) -> float | None:
-    """Tier 1. None if DSSP fails to run or no residue qualifies (caller
-    should fall back to Tier 2 in that case, not fabricate a value)."""
-    plddt_by_resnum: dict[int, float] = {}
-    data = json.loads(plddt_path.read_text())
-    for resnum, conf in zip(data["residueNumber"], data["confidenceScore"]):
-        plddt_by_resnum[int(resnum)] = float(conf)
+    """Tier 1. None if DSSP fails to run, the cached pLDDT/structure files are
+    unreadable, or no residue qualifies (caller should fall back to Tier 2 in
+    any of those cases, not fabricate a value or crash the whole batch over
+    one accession's corrupt cache entry)."""
+    try:
+        plddt_by_resnum: dict[int, float] = {}
+        data = json.loads(plddt_path.read_text())
+        for resnum, conf in zip(data["residueNumber"], data["confidenceScore"]):
+            plddt_by_resnum[int(resnum)] = float(conf)
 
-    residues = _get_dssp_residues(accession, cif_path)
-    if residues is None:
+        residues = _get_dssp_residues(accession, cif_path)
+        if residues is None:
+            return None
+
+        vals = []
+        for res in residues:
+            aa, rel_asa, resnum = res["aa"], res["rsa"], res["resnum"]
+            if aa not in _KD:
+                continue
+            plddt = plddt_by_resnum.get(resnum)
+            if plddt is None or plddt < PLDDT_CUTOFF or rel_asa < RSA_CUTOFF:
+                continue
+            vals.append(_KD[aa])
+        return _kd_score(vals) if vals else None
+    except Exception as e:
+        print(f"  [dssp] {accession}: unreadable cache ({e}) — falling back to Tier 2")
         return None
-
-    vals = []
-    for res in residues:
-        aa, rel_asa, resnum = res["aa"], res["rsa"], res["resnum"]
-        if aa not in _KD:
-            continue
-        plddt = plddt_by_resnum.get(resnum)
-        if plddt is None or plddt < PLDDT_CUTOFF or rel_asa < RSA_CUTOFF:
-            continue
-        vals.append(_KD[aa])
-    return _kd_score(vals) if vals else None
 
 
 def _fetch_sequences(ids: list[str]) -> dict[str, float]:
