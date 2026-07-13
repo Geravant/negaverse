@@ -228,6 +228,8 @@ negaverse/io/dryad_ppi.py
 out/
 huri_out/
 dryad_out/
+covid_out/
+upna_out/
 __pycache__/
 *.egg-info/
 

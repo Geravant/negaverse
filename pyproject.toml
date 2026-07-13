@@ -12,6 +12,9 @@ dependencies = [
     "pyyaml>=6.0",
 ]
 
+[project.scripts]
+negaverse = "negaverse.cli:main"
+
 [project.optional-dependencies]
 # literature-reasoning stream (§5.2): pick one or both backends
 llm = ["anthropic>=0.40", "httpx>=0.27"]

@@ -1,8 +1,20 @@
-"""End-to-end demo: SARS-CoV-2 interactome -> matched train/eval negatives.
+"""End-to-end demo: interactome -> matched train/eval negatives.
 
-    python -m negaverse.cli                 # run with defaults, write to out/
+    python -m negaverse.cli                 # SARS-CoV-2 demo graph, write to out/
     python -m negaverse.cli --n-eval 500 --n-train 500
     python -m negaverse.cli --no-literature # skip the LLM pass explicitly
+    python -m negaverse.cli run --input positives.tsv --modality ppi
+                                             # run on any positives file instead
+                                             # of the built-in SARS-CoV-2 graph
+
+`run` is accepted as an optional leading subcommand (so `negaverse run ...`
+works once the package is installed and exposes the `negaverse` console
+script) but is not required — bare `python -m negaverse.cli ...` still works
+for the built-in demo. --input takes a tab-separated positives file, one pair
+per line: `u\tv` (both endpoints typed "protein", e.g. HuRI) or `u\tv\tu_type
+\tv_type` (explicit per-endpoint types, e.g. viral/host — see
+negaverse/io/generic.py). Without --input, the built-in SARS-CoV-2 demo graph
+is used, unchanged from before.
 
 The LLM literature stream runs by default and is automatically skipped when no
 API key (ANTHROPIC_API_KEY / OPENROUTER_API_KEY) is available. Writes:
@@ -16,12 +28,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from pathlib import Path
 
 import pandas as pd
 
 from . import eval as ev
-from .io import load_sars_cov2_graph, load_negatome_pairs
+from .io import load_sars_cov2_graph, load_negatome_pairs, load_generic_graph
 from .pipeline import PipelineConfig, run_pipeline
 from .streams import build_filters, LiteratureFilter
 
@@ -67,6 +80,15 @@ def _collect_literature(records, out) -> dict:
             "verdicts": dict(verdicts), "file": str(out / "literature_cards.json")}
 
 
+def _load_graph(args):
+    """Built-in SARS-CoV-2 demo graph, or a generic --input positives file."""
+    if args.input:
+        print(f"Loading graph from {args.input} ...")
+        return load_generic_graph(args.input)
+    print("Loading SARS-CoV-2 interactome ...")
+    return load_sars_cov2_graph(include_host_host=not args.no_host_host)
+
+
 def _flags_of(rec: dict) -> list[str]:
     fl = rec.get("flags")
     return fl.split(";") if isinstance(fl, str) else list(fl or [])
@@ -99,8 +121,9 @@ def _judge_remaining(args, out: Path) -> None:
     print(f"--judge-remaining: {len(remaining)} unjudged risky pairs; "
           f"judging {len(todo)} (--literature-k {args.literature_k}) ...")
 
-    graph = load_sars_cov2_graph(include_host_host=not args.no_host_host)
-    cfg = PipelineConfig(match_on_type="viral")
+    graph = _load_graph(args)
+    cfg = PipelineConfig(modality=args.modality,
+                         match_on_type="viral" if not args.input else None)
     graded = build_filters(cfg.modality, ["structured", "topology"])
     lit = LiteratureFilter(enabled=True, provider=args.provider, model=args.model, votes=args.votes)
     for f in graded + [lit]:
@@ -169,13 +192,24 @@ def _judge_remaining(args, out: Path) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
-    ap = argparse.ArgumentParser(prog="negaverse")
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "run":
+        argv = argv[1:]   # `negaverse run ...` == `negaverse ...` (see module docstring)
+
+    ap = argparse.ArgumentParser(prog="negaverse run")
+    ap.add_argument("--input", type=str, default=None,
+                    help="tab-separated positives file (u,v[,u_type,v_type]); "
+                         "replaces the built-in SARS-CoV-2 demo graph when given")
+    ap.add_argument("--modality", type=str, default="ppi",
+                    help="rule set to apply (see rules/<modality>.yaml); only used "
+                         "with --input, since the demo graph is always ppi")
     ap.add_argument("--n-eval", type=int, default=300)
     ap.add_argument("--n-train", type=int, default=300)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", type=str, default="out")
     ap.add_argument("--no-host-host", action="store_true",
-                    help="drop host-host PPI edges (weakens the topological stream)")
+                    help="drop host-host PPI edges (weakens the topological stream); "
+                         "only applies to the built-in SARS-CoV-2 demo graph")
     # literature-reasoning stream (gated Claude/OpenRouter cards, §5.2/§8.5).
     # ON by default; automatically skipped when no API key is available.
     ap.add_argument("--no-literature", action="store_true",
@@ -206,12 +240,12 @@ def main(argv: list[str] | None = None) -> None:
         _judge_remaining(args, out)
         return
 
-    print("Loading SARS-CoV-2 interactome ...")
-    graph = load_sars_cov2_graph(include_host_host=not args.no_host_host)
+    graph = _load_graph(args)
     print("  graph:", graph.summary(), "| edges:", graph.meta)
 
     cfg = PipelineConfig(n_eval=args.n_eval, n_train=args.n_train, seed=args.seed,
-                         match_on_type="viral", gated_max=args.literature_k)
+                         modality=args.modality, gated_max=args.literature_k,
+                         match_on_type="viral" if not args.input else None)
 
     # Build the hourglass filters; the gated literature filter runs the LLM
     # in-pipeline and is fused into confidence (skips itself without a key).
@@ -227,12 +261,21 @@ def main(argv: list[str] | None = None) -> None:
 
     # ---- validation ----
     eval_records = [r for r in result.records if r.mode == "eval"]
+    # degree_match assumes viral/host node typing (the SARS-CoV-2 demo graph, or
+    # any --input file that carries those two types); anything else has no
+    # cross-type confounder for it to check.
+    if {"viral", "host"} <= set(graph.node_type.values()):
+        degree_match = ev.degree_match(graph, eval_records, match_type="viral", seed=args.seed)
+    else:
+        degree_match = {"note": "degree_match assumes viral/host node typing; "
+                                "skipped for this graph's type space"}
     validation = {
         "leakage_known_positive": ev.leakage(graph, result.records),
-        "degree_match": ev.degree_match(graph, eval_records, match_type="viral", seed=args.seed),
+        "degree_match": degree_match,
         "hardness_split": ev.hardness_split(result.records),
     }
-    # gold check (expected: space mismatch on the viral-host demo graph)
+    # gold check against Negatome (UniProt human-human); expect a space mismatch
+    # note unless the input graph happens to share that ID space
     try:
         gold = load_negatome_pairs()
         validation["gold_recall"] = ev.gold_recall(result.records, gold)
