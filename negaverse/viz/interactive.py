@@ -49,13 +49,18 @@ def get_plotly_js() -> str | None:
 
 
 def compute_traces(graph: TypedInteractionGraph, records, seed: int = 0,
-                   n_ref: int = 400, x_axis: "tuple | None" = None) -> dict:
+                   n_ref: int = 400, x_axis: "tuple | None" = None,
+                   gold_negatives: "list[tuple[str, str]] | None" = None) -> dict:
     """x_axis lets a caller replace the default topology x-axis with another
     "looks-real" lens — e.g. sequence/ESM2 resemblance on graphs too sparse for
-    topology (DRYAD). Pass (fn(u,v)->float|None, title, missing_note)."""
+    topology (DRYAD). Pass (fn(u,v)->float|None, title, missing_note).
+
+    gold_negatives: a dataset's own labelled negative benchmark (DRYAD/UPNA),
+    plotted instead of freshly-generated random pairs when given — see
+    plots.py::plot_quadrant for why."""
     from ..streams import TopologyFilter
     from ..io.annotations import build_annotation_table
-    from .plots import _random_nonedges
+    from .plots import _random_nonedges, _stratified_sample
     ann = build_annotation_table()
     rng = np.random.default_rng(seed)
 
@@ -82,8 +87,7 @@ def compute_traces(graph: TypedInteractionGraph, records, seed: int = 0,
         return None if hu is None or hv is None else 1.0 - abs(hu - hv)
 
     edges = [tuple(e) for e in graph.g.edges()]
-    if len(edges) > n_ref:
-        edges = [edges[i] for i in rng.choice(len(edges), n_ref, replace=False)]
+    edges = _stratified_sample(graph, edges, n_ref, seed)
     flagmap = {(r.u, r.v): r.flags for r in records}
     # LLM literature verdicts (when the gated stream ran) keyed order-invariantly,
     # so hovering a risky pair reads the model's actual reasoning, not just its flag.
@@ -94,9 +98,12 @@ def compute_traces(graph: TypedInteractionGraph, records, seed: int = 0,
             verdicts[frozenset((r.u, r.v))] = g
     hard = [(r.u, r.v) for r in records if r.mode == "train" and "suspected_false_negative" not in r.flags]
     risky = [(r.u, r.v) for r in records if "suspected_false_negative" in r.flags]
-    rand = _random_nonedges(graph, n_ref, seed)
+    if gold_negatives:
+        rand, rand_label = _stratified_sample(graph, gold_negatives, n_ref, seed), "dataset gold negatives"
+    else:
+        rand, rand_label = _random_nonedges(graph, n_ref, seed), "random non-pairs"
     cats = [("real interactions", edges, "#2a9d8f"),
-            ("random non-pairs", rand, "#adb5bd"),
+            (rand_label, rand, "#adb5bd"),
             ("our chosen non-pairs", hard, "#e9c46a"),
             ("risky — may interact", risky, "#e63946")]
 
