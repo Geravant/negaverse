@@ -167,7 +167,7 @@ graph. (Overall-AUROC deltas are all within ±0.004 = noise.)
 |---|---|---:|---:|---:|---:|---|
 | `hydrophobicity_interface` | HuRI 34 %, DRYAD 14 % | −0.004 | −0.004 | **−0.043** | −0.003 | **helps** (the one keeper) |
 | `colocalization_mismatch` | HuRI 32 %, DRYAD 0 % | −0.003 | +0.001 | +0.001 | −0.002 | ~neutral (within noise) |
-| `evolutionary_coupling_absence` | **0 % both** | 0.000 | 0.000 | 0.000 | 0.000 | **dead** — never fires |
+| `evolutionary_coupling_absence` | **0 % both** | 0.000 | 0.000 | 0.000 | 0.000 | **removed** — never fired (historical row, kept for context) |
 | `string_low_confidence_non_interaction` | **0 % both** | 0.000 | 0.000 | 0.000 | 0.000 | **dead** — never fires |
 
 **Whole rule layer** (stacked[ALL] − stacked[NO rules]), AUROC_noniso: HuRI-RF **+0.009**,
@@ -184,9 +184,10 @@ biology-relevant stratum in 3 of 4 cells.
    *exactly nothing* — anywhere** (Δ = 0.000 in all 8 cells) **at the time**. Neither fired: no
    `evolutionary_coupling.tsv` existed, and the STRING field (`string_score_with_b` then) wasn't
    registered in `_PAIR_FIELDS` at all. Since then: `evolutionary_coupling_absence` never found
-   a reliable signal after extensive calibration and is being removed from the rule set entirely
-   (separate PR — see `rules/AUTHORING.md` Step 1 for the full writeup). The STRING field was
-   renamed and reworked (`string_score_with_b` → `string_experimental_score_with_b`, STRING's
+   a reliable signal after extensive calibration and **has been removed from the rule set
+   entirely** (it no longer appears in `rules/ppi.yaml`; the row above is kept here only as a
+   historical record of why). The STRING field was renamed and reworked
+   (`string_score_with_b` → `string_experimental_score_with_b`, STRING's
    direct-evidence `experimental` channel instead of the blended `combined_score`) and *is* now
    registered in `_PAIR_FIELDS` — but still has no data computed at DRYAD/HuRI scale, and is
    structurally blocked on HuRI specifically until `scripts/string_channel.py` gains Ensembl-ID
