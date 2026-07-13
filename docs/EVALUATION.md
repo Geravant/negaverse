@@ -58,6 +58,11 @@ and unequal screening — corrected here.
 **Robustness:** the verdict holds on a **dense** graph (HuRI, 52k edges) and a **sparse** one
 (DRYAD, avg degree 0.35), and under **two different learners** (RandomForest and LightGBM).
 
+> `topology_safe` is statistically comparable-or-ahead of `stacked` on raw AUROC in 3 of 4
+> cells above — `stacked`'s edge isn't a higher score, it's **zero-leakage purity plus a
+> harder negative tail at the same AUROC** (safe draws from the whole pool; stacked keeps
+> only the hard cases every signal unanimously clears), not an outright AUROC win over safe.
+
 ---
 
 ## 3. Which biology rules earn their place (leave-one-out)
@@ -68,8 +73,18 @@ and unequal screening — corrected here.
 |---|---|---|---|
 | `hydrophobicity_interface` | HuRI 34 %, DRYAD 14 % | −0.043 (DRYAD·RF) | **keeper** — the one rule that consistently helps |
 | `colocalization_mismatch` | HuRI 32 % | ~neutral in ablation; direct calibration AUROC 0.88–0.91 on DRYAD | live, being re-measured |
-| `evolutionary_coupling_absence` | 0 % | never fires | being removed |
 | `string_low_confidence_non_interaction` | 0 % | no data at scale yet | dormant |
+
+> `hydrophobicity_interface` fires on **high** exposed hydrophobicity, which sounds backwards
+> (interfaces are hydrophobic-rich) — but it's calibrated, not a bug: real interactors show
+> *lower* exposed hydrophobicity (their sticky patches are already buried with a partner),
+> confirmed empirically on both datasets include experimentally solved structural data. See `FILTER-EFFECTIVENESS.md` for the calibration.
+
+> `colocalization_mismatch` (no shared GO compartment → safer negative) has a known blind spot:
+> secreted-ligand/cell-surface-receptor pairs are annotated to disjoint compartments
+> (`extracellular region` vs. `plasma membrane`) yet genuinely interact. This is why the rule
+> is a calibrated **weight (0.7), not a veto** — it nudges confidence, it doesn't disqualify —
+> and why it's excluded from `KnownPositiveVeto`'s hard filters.
 
 The point for the jury: **rules are auditable and individually testable** — we can and do show which
 ones pull weight, and drop the ones that don't.
@@ -86,7 +101,12 @@ python -m negaverse.cli                      # SARS-CoV-2 demo → out/negatives
 python -m negaverse.cli --n-train 500 --n-eval 500
 python -m negaverse.cli --no-literature      # skip the LLM review
 python -m negaverse.cli --judge-remaining    # judge the risky pairs a prior run left over
+negaverse run --input positives.tsv --modality ppi   # once installed: run on your own positives file
 ```
+Once the package is installed (`pip install -e .`), the `negaverse` console script is on PATH —
+`negaverse run ...` and bare `negaverse ...` both work identically to `python -m negaverse.cli ...`.
+`--input` takes a tab-separated positives file (`u\tv` or `u\tv\tu_type\tv_type`); without it, the
+built-in SARS-CoV-2 demo graph is used.
 
 | flag | default | what it does |
 |---|---|---|

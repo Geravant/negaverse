@@ -4,6 +4,26 @@
 
 Built for the Claude: Life Sciences Hackathon.
 
+📺 **[3-min demo](https://youtu.be/4RHxGCo-5es)**  ·  🔬 **[interactive showcase](https://geravant.github.io/negaverse/showcase.html)** — rotate the 3D maps, hover any pair for the reasoning  ·  📊 **[full evaluation](docs/EVALUATION.md)** — evaluation at a glance, one page for the jury
+
+---
+
+## Does it actually work? (the one-number proof)
+
+Interaction models learn from *positive* pairs (proteins that interact) and *negative* pairs (proteins that don't). Negatives are usually made by pairing proteins **at random** — but some of those "random non-pairs" really do interact. Every one you feed a model is a mislabeled example that teaches it the wrong biology.
+
+We hid **1,000 real interactions** in the candidate pool and measured how many each method **wrongly labels "negative"** — the exact mistake that poisons training data:
+
+| strategy | HuRI | DRYAD |
+|---|---:|---:|
+| naive hard-negative mining (the common default) | **74.6 %** | **64.3 %** |
+| **negaverse default (`stacked`)** | **0.6 %** | **0.0 %** |
+
+Naive mining lets through ~3 of every 4 hidden positives. **negaverse lets through almost none** — a **>10× cleaner** set than random sampling, across 2 datasets and 2 learners.
+And it isn't just clean: **D-SCRIPT, an inductive model trained on negaverse negatives generalizes better to unseen proteins** than one trained on random negatives.
+
+> **Hard, but honest.** Challenging enough to force real learning — screened so they're not disguised true positives. That balance is the whole point.
+
 ---
 
 ## The problem, in plain terms
@@ -29,13 +49,19 @@ Candidate pairs flow through three stages, cheap to expensive:
 ```
    many candidate pairs
         │
-   1. QUICK REJECT   ── drop anything already known to interact
+   1. QUICK REJECT   ── drop anything already documented as interacting in
+        │               gold-standard databases (BioGRID, IntAct, STRING, etc.)
         │
    2. SCORE          ── cheap checks in parallel: network shape,
-        │               biology rules (e.g. "these live in different
-        │               parts of the cell, so they can't meet")
+        │               biology rules (e.g. `hydrophobicity_interface`:
+        │               "surface hydrophobicity — confirmed and
+        │               calibrated against experimentally-derived and
+        │               AlphaFold structures — doesn't support a real
+        │               interface", or `colocalization_mismatch`: "these
+        │               live in different parts of the cell, so they
+        │               are less likely to meet")
         │
-   3. AI REVIEW      ── an LLM reads only the few most uncertain pairs
+   3. AI REVIEW      ── an LLM reads only the most uncertain pairs
         │
    two clean sets out:  a fair BENCHMARK set + a challenging TRAINING set
 ```
@@ -51,9 +77,9 @@ Every pair that comes out carries its scores, flags, and a plain reason — noth
 | **Pipeline** | The full hourglass: quick-reject → score → AI-review → two output sets | ✅ works end-to-end |
 | **Network-shape check** | Judges a pair by how much it *looks like* a real interaction in the network | ✅ |
 | **Embedding-manifold view** | A second, *independent* graph view: places each protein by who it interacts with, then flags a pair that looks like the crowd of real interactions (a likely hidden positive). Where this view and the network-shape view **disagree**, the pair is sent to AI review. | ✅ (opt-in) |
-| **Biology rules** | Plain-English rules in a text file (`rules/*.yaml`) become checks with **no code** — e.g. co-localization ("different part of the cell ⇒ safe non-pair") | ✅ engine + co-localization live |
+| **Biology rules** | Plain-English rules in a text file (`rules/*.yaml`) become checks with **no code** — e.g. structure-derived surface hydrophobicity ("no hydrophobic interface, from experimental + AlphaFold structures ⇒ safe non-pair") and co-localization ("different part of the cell ⇒ relatively safe non-pair") | ✅ engine + co-localization + hydrophobicity live |
 | **AI literature review** | An LLM reads the risky pairs (the ones that look like they might really interact) and returns a reasoned verdict; every run reports how many risky pairs it judged vs. left over, and `--judge-remaining` finishes the tail | ✅ (on by default; skipped without an API key) |
-| **Known-interaction screening** | Removes any pair documented as interacting in outside databases (IntAct, BioGRID, …) | ✅ live — BioGRID + IntAct built by one script (~1.5M human pairs); vetoes 290 false-negatives on HuRI |
+| **Known-interaction screening** | Removes any pair documented as interacting in outside databases (IntAct, BioGRID, STRING…) | ✅ live — BioGRID + IntAct built by one script (~1.5M human pairs); vetoes 290 false-negatives on HuRI |
 | **Benchmark** | Trains a model on our negatives vs. random ones and measures which is better | ✅ |
 | **Dashboard** | A single web page (`out/report.html`) with plain-language charts, made after each run | ✅ |
 
@@ -61,23 +87,6 @@ Every pair that comes out carries its scores, flags, and a plain reason — noth
 
 ---
 
-## Does it actually work? (the one-number proof)
-
-We hid **1,000 real interactions** in the candidate pool and measured what fraction each strategy
-**wrongly labels "negative"** — the exact mistake that poisons training data:
-
-| strategy | HuRI | DRYAD |
-|---|---:|---:|
-| naive hard-negative mining (the common default) | **74.6 %** | **64.3 %** |
-| **negaverse default (`stacked`)** | **0.6 %** | **0.0 %** |
-
-Naive hard mining grabs ~3 of every 4 hidden positives; negaverse lets ~0 through. It also **beats
-random downstream** and is the **cleanest** (zero leakage) — across 2 datasets and 2 learners.
-
-→ **Full evidence, all flags, and every command on one page: [`docs/EVALUATION.md`](docs/EVALUATION.md).**
-→ **Interactive showcase (open in a browser): [`docs/showcase.html`](docs/showcase.html)** — rotate the 3D maps, hover any risky pair for the LLM verdict. Self-contained; rebuild with `python3 scripts/build_showcase.py`.
-
----
 
 ## Quick start
 
