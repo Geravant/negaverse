@@ -70,24 +70,6 @@ Every pair that comes out carries its scores, flags, and a plain reason — noth
 
 ---
 
-## What's built so far
-
-| Piece | What it does | Status |
-|---|---|---|
-| **Pipeline** | The full hourglass: quick-reject → score → AI-review → two output sets | ✅ works end-to-end |
-| **Network-shape check** | Judges a pair by how much it *looks like* a real interaction in the network | ✅ |
-| **Embedding-manifold view** | A second, *independent* graph view: places each protein by who it interacts with, then flags a pair that looks like the crowd of real interactions (a likely hidden positive). Where this view and the network-shape view **disagree**, the pair is sent to AI review. | ✅ (opt-in) |
-| **Biology rules** | Plain-English rules in a text file (`rules/*.yaml`) become checks with **no code** — e.g. structure-derived surface hydrophobicity ("no hydrophobic interface, from experimental + AlphaFold structures ⇒ safe non-pair") and co-localization ("different part of the cell ⇒ relatively safe non-pair") | ✅ engine + co-localization + hydrophobicity live |
-| **AI literature review** | An LLM reads the risky pairs (the ones that look like they might really interact) and returns a reasoned verdict; every run reports how many risky pairs it judged vs. left over, and `--judge-remaining` finishes the tail | ✅ (on by default; skipped without an API key) |
-| **Known-interaction screening** | Removes any pair documented as interacting in outside databases (IntAct, BioGRID, STRING…) | ✅ live — BioGRID + IntAct built by one script (~1.5M human pairs); vetoes 290 false-negatives on HuRI |
-| **Benchmark** | Trains a model on our negatives vs. random ones and measures which is better | ✅ |
-| **Dashboard** | A single web page (`out/report.html`) with plain-language charts, made after each run | ✅ |
-
-**Adding a new biology rule is editing a text file — no programming.** See [`rules/AUTHORING.md`](rules/AUTHORING.md), or hand a paper to the `rule-from-literature` Claude skill and it writes the rule for you.
-
----
-
-
 ## Quick start
 
 ```bash
@@ -132,6 +114,28 @@ python scripts/bench_corrected.py --dataset huri --injection-test --inject-k 100
 python scripts/build_known_positive_sources.py # build the BioGRID + IntAct known-interaction screens
 python scripts/validate_rules.py               # check the biology rules parse
 ```
+</details>
+
+---
+
+## What's built so far
+
+<details>
+<summary><b>What's built so far (component status)</b></summary>
+
+| Piece | What it does | Status |
+|---|---|---|
+| **Pipeline** | The full hourglass: quick-reject → score → AI-review → two output sets | ✅ works end-to-end |
+| **Network-shape check** | Judges a pair by how much it *looks like* a real interaction in the network | ✅ |
+| **Embedding-manifold view** | A second, *independent* graph view: places each protein by who it interacts with, then flags a pair that looks like the crowd of real interactions (a likely hidden positive). Where this view and the network-shape view **disagree**, the pair is sent to AI review. | ✅ (opt-in) |
+| **Biology rules** | Plain-English rules in a text file (`rules/*.yaml`) become checks with **no code** — e.g. structure-derived surface hydrophobicity ("no hydrophobic interface, from experimental + AlphaFold structures ⇒ safe non-pair") and co-localization ("different part of the cell ⇒ relatively safe non-pair") | ✅ engine + co-localization + hydrophobicity live |
+| **AI literature review** | An LLM reads the risky pairs (the ones that look like they might really interact) and returns a reasoned verdict; every run reports how many risky pairs it judged vs. left over, and `--judge-remaining` finishes the tail | ✅ (on by default; skipped without an API key) |
+| **Known-interaction screening** | Removes any pair documented as interacting in outside databases (IntAct, BioGRID, STRING…) | ✅ live — BioGRID + IntAct built by one script (~1.5M human pairs); vetoes 290 false-negatives on HuRI |
+| **Benchmark** | Trains a model on our negatives vs. random ones and measures which is better | ✅ |
+| **Dashboard** | A single web page (`out/report.html`) with plain-language charts, made after each run | ✅ |
+
+**Adding a new biology rule is editing a text file — no programming.** See [`rules/AUTHORING.md`](rules/AUTHORING.md), or hand a paper to the `rule-from-literature` Claude skill and it writes the rule for you.
+
 </details>
 
 ---
