@@ -52,12 +52,19 @@ def _shortest_paths(g: nx.Graph, pairs, cutoff: int = 6) -> np.ndarray:
 
 
 def plot_separability(graph: TypedInteractionGraph, positives, random_neg, hard_neg,
-                      out_path: str | Path) -> Path:
+                      out_path: str | Path, random_label: str | None = None) -> Path:
     """Show negaverse's hard negatives sit *between* positives and random
     negatives on structural axes — i.e. they are the topologically positive-like
-    (harder) negatives the tool is meant to select."""
+    (harder) negatives the tool is meant to select.
+
+    random_label: when the "random" slot actually holds a dataset's own gold
+    negatives (DRYAD/UPNA) rather than freshly-generated random pairs, override
+    the legend/title text so the plot doesn't call them "random" when they aren't."""
     g = graph.g
     sets = {"positive": positives, "random": random_neg, "hard": hard_neg}
+    names = dict(_NAME)
+    if random_label:
+        names["random"] = random_label
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4.6))
 
@@ -69,7 +76,7 @@ def plot_separability(graph: TypedInteractionGraph, positives, random_neg, hard_
         cn = np.clip(_common_neighbors(g, pairs), 0, clip)
         bins = np.arange(0, clip + 2) - 0.5
         ax1.hist(cn, bins=bins, density=True, histtype="step", linewidth=2,
-                 color=_C[name], label=f"{_NAME[name]} (n={len(pairs)})")
+                 color=_C[name], label=f"{names[name]} (n={len(pairs)})")
     ax1.set_xlabel("number of shared partner proteins")
     ax1.set_ylabel("share of pairs")
     ax1.set_title("How many partners the two proteins share")
@@ -84,7 +91,7 @@ def plot_separability(graph: TypedInteractionGraph, positives, random_neg, hard_
         sp = _shortest_paths(g, pairs)
         counts = np.array([(sp == d).mean() for d in range(1, 8)])
         ax2.bar(np.arange(7) + offsets[name], counts, width=width,
-                color=_C[name], label=_NAME[name])
+                color=_C[name], label=names[name])
     ax2.set_xticks(np.arange(7))
     ax2.set_xticklabels(labels)
     ax2.set_xlabel("steps apart in the interaction network")
@@ -92,8 +99,8 @@ def plot_separability(graph: TypedInteractionGraph, positives, random_neg, hard_
     ax2.set_title("How far apart the two proteins are")
     ax2.legend()
 
-    fig.suptitle("Our chosen non-pairs look more like real interactions than random ones do",
-                 fontsize=12)
+    fig.suptitle(f"Our chosen non-pairs look more like real interactions than "
+                 f"{names['random']} do", fontsize=12)
     fig.tight_layout(rect=(0, 0, 1, 0.96))
     out_path = Path(out_path)
     fig.savefig(out_path, dpi=130)
@@ -170,19 +177,61 @@ def _random_nonedges(graph: TypedInteractionGraph, n: int, seed: int):
     return out
 
 
+def _stratified_sample(graph: TypedInteractionGraph, pairs: list[tuple[str, str]],
+                       n: int, seed: int, n_strata: int = 10) -> list[tuple[str, str]]:
+    """Sample n pairs from `pairs`, stratified by degree-sum rank (equal-COUNT
+    buckets, not equal-width — robust to the power-law-heavy degree
+    distributions real PPI graphs have) instead of a plain uniform draw.
+    A large population (e.g. DRYAD's 3,000 edges or UPNA's ~3M gold
+    negatives) downsampled by plain `rng.choice` risks a visually skewed
+    sample purely by chance — overrepresenting one structural regime
+    (all-hub or all-peripheral pairs) and misleading the reader about where
+    the FULL population actually sits. Stratifying keeps the displayed
+    sample's degree-sum spread representative of the real one."""
+    if len(pairs) <= n:
+        return list(pairs)
+    rng = np.random.default_rng(seed)
+    deg = dict(graph.g.degree())
+    degsum = np.array([deg.get(u, 0) + deg.get(v, 0) for u, v in pairs], dtype=float)
+    ranks = np.argsort(np.argsort(degsum))            # 0..len-1, ties broken by input order
+    strata = (ranks * n_strata) // len(pairs)
+    out: list[tuple[str, str]] = []
+    for s in range(n_strata):
+        idx = np.where(strata == s)[0]
+        if len(idx) == 0:
+            continue
+        k = min(len(idx), max(1, round(n * len(idx) / len(pairs))))
+        out.extend(pairs[i] for i in rng.choice(idx, size=k, replace=False))
+    if len(out) > n:                                  # trim rounding overshoot
+        idx = rng.choice(len(out), size=n, replace=False)
+        out = [out[i] for i in idx]
+    elif len(out) < n:                                # pad rounding shortfall
+        chosen = {frozenset(p) for p in out}
+        remaining = [p for p in pairs if frozenset(p) not in chosen]
+        rng.shuffle(remaining)
+        out.extend(remaining[:n - len(out)])
+    return out
+
+
 def _is_risky(r) -> bool:
     return "suspected_false_negative" in r.flags
 
 
 def plot_quadrant(graph: TypedInteractionGraph, records, out_path: str | Path,
-                  seed: int = 0, n_ref: int = 500) -> Path:
+                  seed: int = 0, n_ref: int = 500,
+                  gold_negatives: list[tuple[str, str]] | None = None) -> Path:
     """Two INDEPENDENT lenses at once (Lucy's three-regime framing):
       x = "looks like a real interaction"  — network proximity (topology risk)
       y = "biology says they can interact" — shared subcellular compartments
     A pair can look real by the network yet be biologically impossible (bottom-
     right) — those are the strong hard negatives; ones that look real AND could
     co-locate (top-right, mixed with positives) are the risky suspected positives;
-    random pairs sit far left. Needs compartment annotations (rich on HuRI)."""
+    random pairs sit far left. Needs compartment annotations (rich on HuRI).
+
+    gold_negatives: a dataset's own labelled negative benchmark (DRYAD/UPNA),
+    plotted INSTEAD of freshly-generated random pairs when given — a real
+    external negative set is a more meaningful comparison than a synthetic one
+    for datasets that ship one."""
     from ..streams import TopologyFilter
     from ..io.annotations import build_annotation_table
     tf = TopologyFilter(); tf.fit(graph)
@@ -201,13 +250,15 @@ def plot_quadrant(graph: TypedInteractionGraph, records, out_path: str | Path,
         return len(cu & cv) / union if union else None
 
     edges = [tuple(e) for e in graph.g.edges()]
-    if len(edges) > n_ref:
-        edges = [edges[i] for i in rng.choice(len(edges), n_ref, replace=False)]
+    edges = _stratified_sample(graph, edges, n_ref, seed)
     hard = [(r.u, r.v) for r in records if r.mode == "train" and not _is_risky(r)]
     risky = [(r.u, r.v) for r in records if _is_risky(r)]
-    rand = _random_nonedges(graph, n_ref, seed)
+    if gold_negatives:
+        rand, rand_label = _stratified_sample(graph, gold_negatives, n_ref, seed), "dataset gold negatives"
+    else:
+        rand, rand_label = _random_nonedges(graph, n_ref, seed), "random non-pairs"
     cats = [("real interactions", edges, "#2a9d8f", 0.45),
-            ("random non-pairs", rand, "#adb5bd", 0.4),
+            (rand_label, rand, "#adb5bd", 0.4),
             ("our chosen non-pairs", hard, "#e9c46a", 0.75),
             ("risky — may interact", risky, "#e63946", 0.9)]
 
@@ -302,23 +353,28 @@ def plot_flag_breakdown(records, out_path: str | Path) -> Path:
 
 
 def plot_manifold(graph: TypedInteractionGraph, records, out_path: str | Path,
-                  seed: int = 0, n_ref: int = 500) -> Path:
+                  seed: int = 0, n_ref: int = 500,
+                  gold_negatives: list[tuple[str, str]] | None = None) -> Path:
     """Lucy's 4-regime manifold: PCA of pairs in topology-feature space —
     positives (the manifold), random negatives (far), hard negatives (close but
-    distinguishable), and risky negatives (inside the positive-like cloud)."""
+    distinguishable), and risky negatives (inside the positive-like cloud).
+
+    gold_negatives: see plot_quadrant — a dataset's own labelled negatives,
+    plotted instead of freshly-generated random pairs when given."""
     import matplotlib.pyplot as plt
     from sklearn.decomposition import PCA
     from ..bench.benchmark import _features
     adj = {n: set(graph.g.neighbors(n)) for n in graph.g.nodes()}
-    rng = np.random.default_rng(seed)
     edges = [tuple(e) for e in graph.g.edges()]
-    if len(edges) > n_ref:
-        edges = [edges[i] for i in rng.choice(len(edges), n_ref, replace=False)]
+    edges = _stratified_sample(graph, edges, n_ref, seed)
     hard = [(r.u, r.v) for r in records if r.mode == "train" and not _is_risky(r)]
     risky = [(r.u, r.v) for r in records if _is_risky(r)]
-    rand = _random_nonedges(graph, n_ref, seed)
+    if gold_negatives:
+        rand, rand_label = _stratified_sample(graph, gold_negatives, n_ref, seed), "dataset gold negatives"
+    else:
+        rand, rand_label = _random_nonedges(graph, n_ref, seed), "random non-pairs"
     cats = [("real interactions", edges, "#2a9d8f", 0.5),
-            ("random non-pairs", rand, "#adb5bd", 0.5),
+            (rand_label, rand, "#adb5bd", 0.5),
             ("our chosen non-pairs", hard, "#e9c46a", 0.7),
             ("risky — may interact", risky, "#e63946", 0.9)]
     cats = [(n, p, c, a) for n, p, c, a in cats if p]
@@ -347,26 +403,36 @@ def plot_manifold(graph: TypedInteractionGraph, records, out_path: str | Path,
 
 def render_all(graph: TypedInteractionGraph, records, out_dir: str | Path,
                stats: dict | None = None, seed: int = 0, n_ref: int = 500,
-               x_axis: "tuple | None" = None):
+               x_axis: "tuple | None" = None,
+               gold_negatives: list[tuple[str, str]] | None = None):
     """Render every demo panel from a pipeline run's records (+ stats).
 
     x_axis (optional) overrides the interactive map's default topology x-axis with
-    another looks-real lens — see compute_traces (used for DRYAD's sequence axis)."""
+    another looks-real lens — see compute_traces (used for DRYAD's sequence axis).
+
+    gold_negatives (optional): a dataset's own labelled negative benchmark
+    (DRYAD/UPNA) — plotted in place of freshly-generated random pairs across
+    every panel below, since a real external negative set is a more
+    meaningful comparison than a synthetic one when a dataset ships one."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    rng = np.random.default_rng(seed)
 
     edges = [tuple(e) for e in graph.g.edges()]
-    if len(edges) > n_ref:
-        idx = rng.choice(len(edges), size=n_ref, replace=False)
-        edges = [edges[i] for i in idx]
+    edges = _stratified_sample(graph, edges, n_ref, seed)
     hard = [(r.u, r.v) for r in records]
-    random_neg = _random_nonedges(graph, min(n_ref, max(len(hard), 1)), seed)
+    n_neg = min(n_ref, max(len(hard), 1))
+    if gold_negatives:
+        random_neg, random_label = _stratified_sample(graph, gold_negatives, n_neg, seed), "dataset gold negatives"
+    else:
+        random_neg, random_label = _random_nonedges(graph, n_neg, seed), None
 
-    written = [plot_separability(graph, edges, random_neg, hard, out_dir / "separability.png")]
+    written = [plot_separability(graph, edges, random_neg, hard, out_dir / "separability.png",
+                                 random_label=random_label)]
     if records:
-        written.append(plot_quadrant(graph, records, out_dir / "quadrant.png", seed, n_ref))
-        written.append(plot_manifold(graph, records, out_dir / "manifold.png", seed, n_ref))
+        written.append(plot_quadrant(graph, records, out_dir / "quadrant.png", seed, n_ref,
+                                     gold_negatives=gold_negatives))
+        written.append(plot_manifold(graph, records, out_dir / "manifold.png", seed, n_ref,
+                                     gold_negatives=gold_negatives))
         written.append(plot_confidence_hardness(records, out_dir / "confidence_hardness.png"))
         written.append(plot_flag_breakdown(records, out_dir / "flag_breakdown.png"))
     if stats:
@@ -376,7 +442,8 @@ def render_all(graph: TypedInteractionGraph, records, out_dir: str | Path,
             import json as _json
             from .interactive import compute_traces
             (out_dir / "interactive3d.json").write_text(
-                _json.dumps(compute_traces(graph, records, seed, n_ref, x_axis=x_axis)))
+                _json.dumps(compute_traces(graph, records, seed, n_ref, x_axis=x_axis,
+                                          gold_negatives=gold_negatives)))
             written.append(out_dir / "interactive3d.json")
         except Exception:
             pass                          # 3D panel is optional

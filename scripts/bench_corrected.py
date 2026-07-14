@@ -35,6 +35,8 @@ This bench fixes all three:
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
+
 import numpy as np
 import networkx as nx
 from sklearn.ensemble import RandomForestClassifier
@@ -246,8 +248,17 @@ def _hits(y, s, k, positive=True):
 def _evaluate(tr_pos, test_pos, train_neg, nodes, gold_test, seed, models, emb_dim=32):
     """Returns {model_kind: metric_dict}. The train/test positive split is fixed by
     the caller (fit ONCE, before pool scoring) — this only trains + scores. Same
-    features/split across models; only the learner changes (model-sensitivity)."""
+    features/split across models; only the learner changes (model-sensitivity).
+
+    gold_test=[] (no independent gold-negative benchmark for this dataset, e.g.
+    sars/covid — see _load_dataset) -> NaN metrics rather than a fabricated
+    comparison; the injection test's primary selection-rate metric doesn't call
+    this at all, so it's unaffected."""
     n_bal = min(len(test_pos), len(gold_test))
+    if n_bal == 0:
+        nan = float("nan")
+        return {m: {"auroc": nan, "auprc": nan, "ppi@100": nan, "ppni@100": nan}
+                for m in models}
     test_pos, test_neg = list(test_pos)[:n_bal], list(gold_test)[:n_bal]
 
     train_G = nx.Graph(); train_G.add_nodes_from(nodes); train_G.add_edges_from(tr_pos)
@@ -276,7 +287,10 @@ def _evaluate(tr_pos, test_pos, train_neg, nodes, gold_test, seed, models, emb_d
 
 
 def _load_dataset(name):
-    """(all_pos edges, gold-negative pairs, node list, full_pos_set)."""
+    """(all_pos edges, gold-negative pairs, node list, full_pos_set). `gold`
+    is the independent negative benchmark _evaluate() scores test positives
+    against — NOT the negatives any selection arm is allowed to pick from
+    (those come from the frozen candidate pool instead)."""
     if name == "huri":
         g = load_huri_graph()
         gold = [tuple(p) for p in load_negatome_in_ensembl_space(set(g.g.nodes()))]
@@ -284,7 +298,7 @@ def _load_dataset(name):
         return pos, gold, list(g.g.nodes()), {frozenset(e) for e in g.g.edges()}
     if name == "dryad":
         pos, neg = [], []
-        with open("local-docs/dryad-ppi/benchmarks/benchmarks/positives_and_negatives.tsv") as fh:
+        with open("local-docs/dryad-ppi/benchmarks/positives_and_negatives.tsv") as fh:
             next(fh)
             for line in fh:
                 pair, cat = line.rstrip("\n").split("\t")
@@ -292,6 +306,58 @@ def _load_dataset(name):
                 (pos if cat == "positive" else neg).append((a, b))
         nodes = sorted({p for e in pos + neg for p in e})
         return pos, neg, nodes, {frozenset(e) for e in pos}
+    if name == "upna":
+        # UPNA-PPI ships gene-symbol-keyed CSVs; remap to UniProt (scripts/
+        # build_gene_symbol_uniprot_map.py) so this reuses the same UniProt-space
+        # annotation/known-positive sources as dryad/sars instead of needing its
+        # own gene-symbol-keyed copies of all of them. Scoped to the ~5,037-protein
+        # TPPNI universe (see negaverse/viz/__main__.py::_load_upna_graph for why —
+        # same reasoning applies here). TPPNI (their own headline contrastive-L3
+        # hard-negative method) doubles as `gold`: an independent, external
+        # negative benchmark this repo didn't select, exactly what `gold` needs to be.
+        import pandas as pd
+        upna_dir = Path("local-docs/upna-ppi")
+        map_path = Path("local-docs/mappings/gene_symbol_to_uniprot.tsv")
+        sym2acc: dict[str, str] = {}
+        if map_path.exists():
+            for line in map_path.read_text().splitlines():
+                if line.strip() and not line.startswith("#") and "\t" in line:
+                    sym, acc = line.split("\t")[:2]
+                    sym2acc[sym] = acc
+
+        def _pairs(pattern: str) -> list[tuple[str, str]]:
+            out = []
+            for f in sorted(upna_dir.glob(pattern)):
+                for chunk in pd.read_csv(f, usecols=["SymbolA", "SymbolB"], chunksize=300_000):
+                    for a, b in zip(chunk["SymbolA"].astype(str), chunk["SymbolB"].astype(str)):
+                        if a != b:
+                            out.append((a, b))
+            return out
+
+        universe_sym = {s for pair in _pairs("TPPNI_*.csv") for s in pair}
+
+        def _map(pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
+            return [(sym2acc[a], sym2acc[b]) for a, b in pairs
+                    if a in universe_sym and b in universe_sym and a in sym2acc and b in sym2acc]
+
+        pos = _map(_pairs("PPI_part_*.csv"))
+        gold = _map(_pairs("TPPNI_*.csv"))
+        nodes = sorted({sym2acc[s] for s in universe_sym if s in sym2acc})
+        return pos, gold, nodes, {frozenset(e) for e in pos}
+    if name in ("sars", "covid"):
+        # Host-viral: no independent gold-negative benchmark exists for this
+        # cross-species space (Negatome is human-human only — see
+        # negaverse/io/negatome.py's own docstring: "NOT the viral-host
+        # SARS-CoV-2 graph"). gold=[] — _evaluate() reports NaN for the
+        # downstream-AUROC "damage" columns rather than fabricate a comparison,
+        # but the injection test's primary metric (selection rate) needs no
+        # gold at all, so it still runs. Node typing collapses to a plain
+        # "protein" pool either way (_score_pool always re-types), so this
+        # doesn't hit the viral/host applies_to mismatch the live pipeline has.
+        from negaverse.io import load_sars_cov2_graph
+        g = load_sars_cov2_graph()
+        pos = [tuple(e) for e in g.g.edges()]
+        return pos, [], list(g.g.nodes()), {frozenset(e) for e in pos}
     raise ValueError(name)
 
 
@@ -362,7 +428,7 @@ def _injection_backtest(all_pos, gold, nodes, full_pos_set, args):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dataset", choices=["huri", "dryad"], default="huri")
+    ap.add_argument("--dataset", choices=["huri", "dryad", "upna", "sars", "covid"], default="huri")
     ap.add_argument("--max-positives", type=int, default=20000, help="0 = all")
     ap.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2])
     ap.add_argument("--max-pool", type=int, default=200000)
