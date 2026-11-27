@@ -212,14 +212,22 @@ _NOVEL = {"idg": "out/inductive/novel_idg_verified.tsv",
           "sars_host": "out/inductive/novel_sars_host_verified.tsv"}
 
 
-def foldbatch(space, top_k, seed=0):
+def foldbatch(space, top_k, seed=0, max_len_sum=0):
     seqs = {}
     for l in open(_SEQ[space]):
         if "\t" in l:
             i, s = l.rstrip("\n").split("\t")[:2]; seqs[i] = s
-    novel = list(csv.DictReader(open(_NOVEL[space]), delimiter="\t"))[:top_k]
-    picks = [(r["protein_a"], r["protein_b"]) for r in novel
-             if r["protein_a"] in seqs and r["protein_b"] in seqs]
+    novel = list(csv.DictReader(open(_NOVEL[space]), delimiter="\t"))
+    picks = []
+    for r in novel:
+        a, b = r["protein_a"], r["protein_b"]
+        if a not in seqs or b not in seqs:
+            continue
+        if max_len_sum and len(seqs[a]) + len(seqs[b]) > max_len_sum:
+            continue                              # keep it foldable on a laptop
+        picks.append((a, b))
+        if len(picks) >= top_k:
+            break
 
     # length-matched random control: random pairs from the same space whose summed
     # length distribution matches the picks (so pDockQ isn't confounded by size)
@@ -407,6 +415,8 @@ def main():
                     required=True)
     ap.add_argument("--space", choices=["idg", "sars_host"], default="idg")
     ap.add_argument("--top-k", type=int, default=20)
+    ap.add_argument("--max-len-sum", type=int, default=0,
+                    help="foldbatch: cap total complex length (aa) so it folds on a laptop GPU")
     args = ap.parse_args()
     if args.stage == "reference":
         reference()
@@ -417,7 +427,7 @@ def main():
     elif args.stage == "filtertest":
         filtertest()
     else:
-        foldbatch(args.space, args.top_k)
+        foldbatch(args.space, args.top_k, max_len_sum=args.max_len_sum)
 
 
 if __name__ == "__main__":

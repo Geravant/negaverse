@@ -86,8 +86,33 @@ Pipeline: model narrows → disorder screen removes the failure mode → **AF2 s
 All ipTM low (0.11–0.25) — **no confirmed hit yet**. Novel pairs edge controls
 (top-2 novel; novel mean 0.18 vs control 0.15) but within noise. This is expected:
 even *real* interactions clear the bar only 21% of the time, so folding 5 pairs and
-getting zero is normal. Second pass (5 models, 20 complexes, kinases + host-host)
-is running to hunt a confident hit (ipTM > 0.5).
+getting zero is normal.
+
+### AF2 fold, second pass (5 models, Colab T4) — INTERIM, 8/20 complete
+Re-folding the IDG kinase shortlist with **5 models** (best-of-5 ipTM). This is a
+partial log (`local-docs/af2-results-interim.txt`): the first **8 novel** complexes
+have finished; the **4 length-matched controls have not folded yet**, so we cannot
+yet claim novel > control — only report the novel ipTMs.
+
+| best-of-5 ipTM | pair | biology |
+|---|---|---|
+| **0.500** | **TSSK4 × TSSK6** | paralogous testis-specific kinases — the top prior |
+| 0.344 | DGUOK × AK3 | mitochondrial deoxyribonucleoside / adenylate kinases |
+| 0.257 | DTYMK × UCK2 | pyrimidine-salvage kinases |
+| 0.250 | GUK1 × NMRK2 | guanylate / NAD-riboside kinases |
+| 0.248 | GUK1 × IDNK | guanylate / gluconate kinases |
+| 0.238 | NME4 × CKMT2 | mitochondrial NDP / creatine kinases |
+| 0.206 | IDNK × NMRK2 | small nucleotide kinases |
+| 0.153 | AK1 × DGUOK | adenylate / deoxyguanosine kinases |
+
+**Lead: TSSK4 × TSSK6 = ipTM 0.500** — doubled from 0.25 (single model) to 0.50
+(5 models), landing right at the plausible-interface threshold. It is our most
+biologically-motivated pick (two paralogous kinases) and sits well clear of the
+next candidate (0.344). Honest reading: 0.50 is *borderline plausible*, not
+*confident* (>0.6–0.7); the four controls still need to fold before the
+novel-vs-control contrast — the actual claim — can be made; and this is 8/20, not
+the full run. The COVID host-host set (`out/dscript/af2_covid_hosthost.fasta`,
+12 novel + 4 controls) is staged for the same 5-model fold.
 
 ## Bottom line
 
